@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>卷王PPT</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <div class="brand">卷王PPT</div>
+    <div class="header-right">
+      <span id="model-info" class="model-info"></span>
+      <button id="key-btn" class="btn btn-ghost">设置 API Key</button>
+      <button id="export-btn" class="btn btn-primary" disabled>导出 PPTX</button>
+    </div>
+  </header>
+
+  <main>
+    <!-- 左侧：对话与流程控制 -->
+    <section id="panel">
+      <div id="messages"></div>
+      <div id="outline-box" class="hidden">
+        <div class="outline-header">大纲（可修改页数后重新生成）</div>
+        <div id="outline-list"></div>
+        <div class="outline-actions">
+          <button id="gen-slides-btn" class="btn btn-primary">确认大纲，生成幻灯片</button>
+          <button id="regen-outline-btn" class="btn">重新生成大纲</button>
+        </div>
+      </div>
+      <form id="input-form">
+        <textarea id="input" rows="3" placeholder="输入 PPT 主题，例如：给大学生讲一次「时间管理」的分享，8 页左右&#10;生成后可继续输入修改指令，例如：把第 3 页要点精简一半"></textarea>
+        <div class="input-bar">
+          <input id="pages" type="number" min="4" max="20" value="8" title="页数" />
+          <button type="submit" id="send-btn" class="btn btn-primary">发送</button>
+        </div>
+      </form>
+    </section>
+
+    <!-- 右侧：幻灯片预览 -->
+    <section id="stage">
+      <div id="empty-tip">幻灯片预览会显示在这里</div>
+      <div id="slides"></div>
+    </section>
+  </main>
+
+  <!-- API Key 弹窗 -->
+  <dialog id="key-dialog">
+    <h3>设置 API Key</h3>
+    <p class="muted">仅保存在本地服务内存中，不会上传到任何第三方。</p>
+    <input id="key-input" type="password" placeholder="sk-..." />
+    <div class="dialog-actions">
+      <button id="key-save" class="btn btn-primary">保存</button>
+      <button id="key-cancel" class="btn">取消</button>
+    </div>
+  </dialog>
+
+  <script src="app.js"></script>
+</body>
+</html>
