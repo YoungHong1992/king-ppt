@@ -1,37 +1,23 @@
-// OpenAI 兼容的 chat 客户端（Node 18+ 内置 fetch）
+// 薄封装：保持旧接口不变（agent.js 无需改动），内部走 llmprovider 多供应商层
+const provider = require('./llmprovider');
 
 const BASE_URL = () => (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, '');
 const MODEL = () => process.env.OPENAI_MODEL || 'gpt-4o-mini';
 
-let runtimeKey = null; // 允许前端在页面里临时填写 key
-function setApiKey(key) { runtimeKey = key || null; }
-function getApiKey() { return runtimeKey || process.env.OPENAI_API_KEY || null; }
+// 旧版「页面临时填 key」入口，转发给 provider 层
+let legacyKey = null;
+function setApiKey(key) { legacyKey = key || null; provider.setLegacyApiKey(key); }
+function getApiKey() { return legacyKey || process.env.OPENAI_API_KEY || null; }
 
-async function chat(messages, { temperature = 0.7, json = false } = {}) {
-  const key = getApiKey();
-  if (!key) {
-    const err = new Error('未配置 API Key：请设置环境变量 OPENAI_API_KEY，或在页面右上角填写');
-    err.code = 'NO_API_KEY';
-    throw err;
-  }
-  const body = { model: MODEL(), messages, temperature };
-  if (json) body.response_format = { type: 'json_object' };
+// 文本对话（chat 能力）
+function chat(messages, opts = {}) {
+  return provider.chat('chat', messages, opts);
+}
 
-  const resp = await fetch(`${BASE_URL()}/chat/completions`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-    body: JSON.stringify(body),
-  });
-  if (!resp.ok) {
-    const text = await resp.text().catch(() => '');
-    const err = new Error(`LLM 请求失败 (${resp.status}): ${text.slice(0, 300)}`);
-    err.code = 'LLM_HTTP';
-    throw err;
-  }
-  const data = await resp.json();
-  const content = data.choices?.[0]?.message?.content;
-  if (!content) throw new Error('LLM 返回内容为空');
-  return content;
+// 多模态识图（vision 能力）：messages 的 content 支持
+// [{ type: 'text', text }, { type: 'image_url', image_url: { url: 'data:image/png;base64,...' } }]
+function chatVision(messages, opts = {}) {
+  return provider.chat('vision', messages, opts);
 }
 
 // 从模型输出中容错提取 JSON 对象/数组
@@ -46,4 +32,4 @@ function extractJson(text) {
   return JSON.parse(cleaned.slice(start, end + 1));
 }
 
-module.exports = { chat, extractJson, setApiKey, getApiKey, BASE_URL, MODEL };
+module.exports = { chat, chatVision, extractJson, setApiKey, getApiKey, BASE_URL, MODEL };

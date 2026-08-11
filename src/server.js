@@ -3,19 +3,24 @@ const express = require('express');
 const { generateOutline, generateSlide, reviseSlides } = require('./agent');
 const { buildPptx } = require('./pptx');
 const { setApiKey, getApiKey, BASE_URL, MODEL } = require('./llm');
+const llmprovider = require('./llmprovider');
 
 const app = express();
 app.use(express.json({ limit: '2mb' }));
 app.use(express.static(path.join(__dirname, '..', 'public')));
 
+function statusOf(err) {
+  if (err.code === 'NO_API_KEY') return 401;
+  if (err.code === 'NO_MODEL_CONFIG' || err.code === 'CAPABILITY_NOT_SUPPORTED') return 400;
+  return 500;
+}
+
 function wrap(handler) {
   return async (req, res) => {
     try {
-      if (req.body && req.body.apiKey) setApiKey(req.body.apiKey);
       await handler(req, res);
     } catch (err) {
-      const status = err.code === 'NO_API_KEY' ? 401 : 500;
-      res.status(status).json({ error: err.message });
+      res.status(statusOf(err)).json({ error: err.message });
     }
   };
 }
@@ -32,6 +37,71 @@ app.post('/api/config', (req, res) => {
   setApiKey(req.body.apiKey);
   res.json({ hasKey: Boolean(getApiKey()) });
 });
+
+// ---------- 供应商实例与模型管理 ----------
+app.get('/api/providers', (req, res) => {
+  res.json({
+    capabilities: llmprovider.CAPABILITIES,
+    capabilityLabels: llmprovider.CAPABILITY_LABELS,
+    templates: llmprovider.PROVIDER_TEMPLATES.map((t) => ({
+      id: t.id, name: t.name, baseURL: t.baseURL, keyUrl: t.keyUrl || null,
+      noKey: Boolean(t.noKey), modelCount: t.models.length,
+      short: t.short || t.name[0], color: t.color || '#64748b',
+      tagline: t.tagline || '', tag: t.tag || '',
+    })),
+    instances: llmprovider.listInstances(),
+    active: llmprovider.listActive(),
+  });
+});
+
+app.post('/api/instances', wrap(async (req, res) => {
+  const inst = llmprovider.createInstance(req.body || {});
+  res.json({ id: inst.id });
+}));
+
+app.put('/api/instances/:id', wrap(async (req, res) => {
+  llmprovider.updateInstance(req.params.id, req.body || {});
+  res.json({ ok: true });
+}));
+
+app.delete('/api/instances/:id', wrap(async (req, res) => {
+  llmprovider.deleteInstance(req.params.id);
+  res.json({ ok: true });
+}));
+
+app.post('/api/instances/:id/test', wrap(async (req, res) => {
+  res.json(await llmprovider.testInstance(req.params.id, req.body || {}));
+}));
+
+app.post('/api/instances/:id/test-model', wrap(async (req, res) => {
+  res.json(await llmprovider.testModel(req.params.id, req.body?.model));
+}));
+
+app.post('/api/instances/:id/test-models', wrap(async (req, res) => {
+  res.json(await llmprovider.testModels(req.params.id));
+}));
+
+app.post('/api/instances/:id/remote-models', wrap(async (req, res) => {
+  const result = await llmprovider.peekRemoteModels(req.params.id);
+  res.json(result);
+}));
+
+app.post('/api/instances/:id/models', wrap(async (req, res) => {
+  const { id: modelId, caps, enabled } = req.body || {};
+  const models = llmprovider.addModel(req.params.id, modelId, caps, enabled);
+  res.json({ models });
+}));
+
+app.delete('/api/instances/:id/models', wrap(async (req, res) => {
+  const models = llmprovider.removeModel(req.params.id, req.body?.model || req.query.model);
+  res.json({ models });
+}));
+
+app.post('/api/active', wrap(async (req, res) => {
+  const { capability, instance, model } = req.body || {};
+  llmprovider.setActiveBinding(capability, instance, model);
+  res.json({ ok: true, active: llmprovider.listActive() });
+}));
 
 app.post('/api/outline', wrap(async (req, res) => {
   const { topic, pages, extra } = req.body;

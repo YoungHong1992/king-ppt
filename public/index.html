@@ -3,57 +3,109 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>卷王PPT</title>
+  <title>卷王PPT · AI 演示文稿 Agent</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%236366f1'/%3E%3Cstop offset='1' stop-color='%238b5cf6'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='32' height='32' rx='8' fill='url(%23g)'/%3E%3Ctext x='16' y='23' font-size='18' text-anchor='middle' fill='white' font-family='sans-serif' font-weight='bold'%3E卷%3C/text%3E%3C/svg%3E" />
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
   <header>
-    <div class="brand">卷王PPT</div>
+    <div class="brand">
+      <span class="brand-logo">卷</span>
+      <span class="brand-name">卷王PPT</span>
+      <span class="brand-tag">AI 演示文稿 Agent</span>
+    </div>
     <div class="header-right">
-      <span id="model-info" class="model-info"></span>
-      <button id="key-btn" class="btn btn-ghost">设置 API Key</button>
-      <button id="export-btn" class="btn btn-primary" disabled>导出 PPTX</button>
+      <button id="model-chip" class="model-chip" title="点击打开模型设置">
+        <span class="chip-dot" id="chip-dot"></span>
+        <span id="model-info">加载中…</span>
+      </button>
+      <button id="export-btn" class="btn btn-primary" disabled>
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        导出 PPTX
+      </button>
+      <button id="settings-btn" class="btn btn-icon" title="模型设置">
+        <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      </button>
     </div>
   </header>
 
   <main>
     <!-- 左侧：对话与流程控制 -->
     <section id="panel">
-      <div id="messages"></div>
+      <div id="messages">
+        <div class="welcome">
+          <div class="welcome-logo">卷</div>
+          <h2>十分钟，做完别人熬夜的 PPT</h2>
+          <p>输入主题 → 确认大纲 → 逐页生成 → 自然语言修改 → 导出可编辑 PPTX</p>
+          <div class="welcome-examples">
+            <button class="example-chip">给大学生讲一次「时间管理」的分享，8 页左右</button>
+            <button class="example-chip">面向投资人的 SaaS 产品路演，10 页</button>
+            <button class="example-chip">公司年度技术总结汇报，12 页</button>
+          </div>
+        </div>
+      </div>
+
       <div id="outline-box" class="hidden">
-        <div class="outline-header">大纲（可修改页数后重新生成）</div>
+        <div class="outline-header">
+          <span>大纲</span>
+          <span class="outline-hint">可修改页数后重新生成</span>
+        </div>
         <div id="outline-list"></div>
         <div class="outline-actions">
           <button id="gen-slides-btn" class="btn btn-primary">确认大纲，生成幻灯片</button>
-          <button id="regen-outline-btn" class="btn">重新生成大纲</button>
+          <button id="regen-outline-btn" class="btn">重新生成</button>
         </div>
       </div>
+
       <form id="input-form">
-        <textarea id="input" rows="3" placeholder="输入 PPT 主题，例如：给大学生讲一次「时间管理」的分享，8 页左右&#10;生成后可继续输入修改指令，例如：把第 3 页要点精简一半"></textarea>
+        <textarea id="input" rows="3" placeholder="输入 PPT 主题，例如：给大学生讲一次「时间管理」的分享，8 页左右&#10;生成后可继续输入修改指令，例如：把第 3 页要点精简一半&#10;Enter 发送，Shift+Enter 换行"></textarea>
         <div class="input-bar">
-          <input id="pages" type="number" min="4" max="20" value="8" title="页数" />
-          <button type="submit" id="send-btn" class="btn btn-primary">发送</button>
+          <label class="pages-label" title="页数">
+            <input id="pages" type="number" min="4" max="20" value="8" /> 页
+          </label>
+          <button type="submit" id="send-btn" class="btn btn-primary btn-send">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+            发送
+          </button>
         </div>
       </form>
     </section>
 
     <!-- 右侧：幻灯片预览 -->
     <section id="stage">
-      <div id="empty-tip">幻灯片预览会显示在这里</div>
+      <div id="progress-bar" class="hidden"><div id="progress-fill"></div></div>
+      <div id="empty-tip">
+        <div class="empty-art">📊</div>
+        <div class="empty-title">幻灯片预览</div>
+        <div class="empty-sub">在左侧输入主题，生成的幻灯片会逐页显示在这里</div>
+      </div>
       <div id="slides"></div>
     </section>
   </main>
 
-  <!-- API Key 弹窗 -->
-  <dialog id="key-dialog">
-    <h3>设置 API Key</h3>
-    <p class="muted">仅保存在本地服务内存中，不会上传到任何第三方。</p>
-    <input id="key-input" type="password" placeholder="sk-..." />
-    <div class="dialog-actions">
-      <button id="key-save" class="btn btn-primary">保存</button>
-      <button id="key-cancel" class="btn">取消</button>
+  <!-- 模型设置面板 -->
+  <dialog id="settings-dialog">
+    <div class="settings-wrap">
+      <aside class="settings-nav">
+        <div class="settings-nav-title">模型设置</div>
+        <div id="settings-nav-items"></div>
+        <div class="settings-nav-foot">
+          API Key 仅保存在本机<br />配置自动保存
+        </div>
+      </aside>
+      <div class="settings-main">
+        <div class="settings-main-header">
+          <h3 id="settings-title">模型设置</h3>
+          <button id="settings-close" class="btn btn-icon" title="关闭">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+        <div id="settings-body"></div>
+      </div>
     </div>
   </dialog>
+
+  <div id="toasts"></div>
 
   <script src="app.js"></script>
 </body>
