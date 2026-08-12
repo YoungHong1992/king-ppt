@@ -47,23 +47,49 @@ npm start    # 启动并自动打开浏览器，默认 http://localhost:3210
 - 新增 OpenAI 兼容模板：在 `PROVIDER_TEMPLATES` 加一条记录即可。
 - 实装视频/音乐生成：在对应适配器实现 `generateVideo(ctx, prompt, opts)` / `generateMusic(ctx, prompt, opts)`；异步任务可复用 `runTask({ submit, poll, isDone, extract })` 轮询器。
 
+## 模板系统
+
+生成逻辑由**模板描述符（template descriptor）**驱动：每个模板一份 `template.json`，声明画布、角色化色板、字体档位、装饰构件、页面家族（family + variant）、组件、类型映射与字数约束。描述符 + 内容经 Layout Resolver 解析为 **Resolved Scene Graph**（与模板无关的最终场景），后端导出（pptxgenjs）与前端预览（DOM）只是两个"画家"，从机制上保证预览 = 导出。
+
+- 详细设计见 `docs/template-system-design.md`
+- **预设模板**：`classic-blue`（经典蓝）、`warm-retro`（复古蓝米，插画素材仅供本机使用，不可再分发）
+- **上传模板**：在模板画廊点「+ 上传模板」选一份 .pptx，系统自动提取主题色、字体、字号档位、背景插画、页脚等，生成描述符草稿；确认面板展示样例预览与低置信度项，保存后即可用于生成
+- 预设模板在 `templates/<id>/`，上传模板存 `~/.king-ppt/templates/<id>/`（含 `source.pptx` 原件，供重新提取）
+- LLM 只输出结构化 JSON（8 种内容类型不变），模板差异全部由渲染层吸收
+
+### 自由排版页（free）
+
+除 8 种结构化类型外，LLM 每页还可以选择输出第 9 类 `"free"`：直接产出固定 1280×720 画布的 HTML 片段，用于核心卖点、重磅数字等重点页的视觉发挥（每份演示硬性要求 1~3 页，harness 会指定内容页正中一页作为重点展示页）。大风格一致性由 prompt 注入的模板风格令牌（色板/字体/基调）保证。
+
+- **预览**：sandbox iframe + 文档级 zoom 等比缩放（`public/html-frame.js`，字符串级 sanitize 剔除脚本/外链）
+- **导出**：本机 Chrome/Edge headless 截图成 2x PNG，整页图片嵌入 PPTX（**该页不可编辑**，结构化页保持矢量可编辑）；未检测到浏览器时设置 `KING_PPT_CHROME` 指向可执行文件
+- `html-frame.js` 的 `sanitize/wrap` 前后端共用，保证预览 = 导出
+- free 页不经 Layout Resolver；html 缺失/损坏时走「反馈重试 → 结构化兜底页」自愈阶梯
+
 ## 原理
 
 - LLM 只输出结构化 JSON（大纲 / 幻灯片 schema），不直接排版
-- 版式收敛为 4 种固定组件：`title`（封面）、`section`（章节页）、`bullets`（要点页）、`twoColumn`（两栏对比）
-- 前端将 JSON 渲染为 HTML 预览；后端用 PptxGenJS 将同一份 JSON 转成 .pptx
+- 版式收敛为 8 种固定组件：`title`（封面）、`section`（章节页）、`bullets`（要点页）、`twoColumn`（两栏对比）、`table`（数据表格）、`steps`（流程步骤）、`quote`（金句页）、`stats`（关键数字）
+- 前端将场景图渲染为 HTML 预览；后端用 PptxGenJS 将同一份场景图转成 .pptx
 
 ## 目录结构
 
 ```
 bin/cli.js         # 启动入口：拉起服务 + 自动开浏览器
-src/server.js      # Express 路由（/api/outline、/api/slides(SSE)、/api/revise、/api/export、/api/providers、/api/instances、/api/active）
-src/agent.js       # Prompt 与 JSON 解析（大纲 / 单页 / 局部修改）
+src/server.js      # Express 路由（/api/outline、/api/slides(SSE)、/api/revise、/api/export、/api/templates(+extract)、/api/providers、/api/instances、/api/active）
+src/agent.js       # Prompt 与 JSON 解析（大纲 / 单页 / 局部修改，注入模板字数约束）
+src/descriptor.js  # 模板描述符加载与枚举（templates/ + ~/.king-ppt/templates/，schemaVersion 校验）
+src/layout-resolver.js # 描述符 + 内容 → Resolved Scene Graph（唯一设计决策者）
+src/pptx-painter.js    # Scene Graph → pptxgenjs（纯绘制；free 页整页图片满铺）
+src/pptx.js        # buildPptx 薄入口（free 页经 renderFree 钩子栅格化）
+src/html-shot.js   # free 页 HTML → PNG（本机 Chrome/Edge headless 截图）
+src/extract.js     # 上传 pptx → 描述符草稿（Stage 0 对象图 + 三层提取 + 安全限制）
 src/llm.js         # 薄封装：保持旧接口，内部走 llmprovider
 src/llmprovider.js # 多供应商抽象：实例/模型管理、能力路由、OpenAI 兼容 / Gemini 适配器、异步任务轮询器
 src/config.js      # 配置持久化（~/.king-ppt/config.json）
-src/pptx.js        # slides JSON → .pptx（16:9，统一主题）
-public/            # 前端单页（无构建步骤）
+templates/         # 预设模板（template.json + assets/）
+public/            # 前端单页 + dom-painter.js + html-frame.js（无构建步骤）
+docs/              # 设计文档
 ```
 
 ## 环境变量（向后兼容，可选）

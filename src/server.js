@@ -1,9 +1,13 @@
 const path = require('path');
 const express = require('express');
-const { generateOutline, generateSlide, reviseSlides } = require('./agent');
+const { generateOutline, generateSlide, reviseSlides, buildFreeStyle } = require('./agent');
+const htmlShot = require('./html-shot');
 const { buildPptx } = require('./pptx');
 const { setApiKey, getApiKey, BASE_URL, MODEL } = require('./llm');
 const llmprovider = require('./llmprovider');
+const { loadDescriptor, listDescriptors } = require('./descriptor');
+const { resolve } = require('./layout-resolver');
+const { extractFromPptx, saveTemplate } = require('./extract');
 
 const app = express();
 app.use(express.json({ limit: '2mb' }));
@@ -103,6 +107,51 @@ app.post('/api/active', wrap(async (req, res) => {
   res.json({ ok: true, active: llmprovider.listActive() });
 }));
 
+// ---------- 模板 ----------
+app.get('/api/templates', (req, res) => {
+  res.json({ templates: listDescriptors() });
+});
+
+// 画廊卡片预览：3 张样例页的场景图
+app.get('/api/templates/:id/sample', wrap(async (req, res) => {
+  const d = loadDescriptor(req.params.id);
+  const samples = [
+    { index: 0, type: 'title', title: '演示文稿标题', subtitle: '副标题示例文字' },
+    { index: 1, type: 'section', title: '第一章节名', subtitle: '章节导语示例' },
+    { index: 2, type: 'bullets', title: '页面标题', bullets: ['第一条要点内容', '第二条要点内容', '第三条要点内容'] },
+  ];
+  res.json({ canvas: d.canvas, scenes: resolve(d, samples, { title: d.meta.name }).slides });
+}));
+
+app.get('/api/templates/:id/assets/:file', wrap(async (req, res) => {
+  const { id, file } = req.params;
+  if (!/^[a-zA-Z0-9_-]+$/.test(id) || file !== path.basename(file)) {
+    return res.status(400).json({ error: '非法的资源路径' });
+  }
+  const d = loadDescriptor(id);
+  const full = path.join(d._dir, 'assets', file);
+  const fs = require('fs');
+  if (!full.startsWith(path.join(d._dir, 'assets')) || !fs.existsSync(full)) {
+    return res.status(404).json({ error: '资源不存在' });
+  }
+  res.sendFile(full);
+}));
+
+app.post('/api/templates/extract', wrap(async (req, res) => {
+  const { name, data } = req.body || {};
+  if (!data) return res.status(400).json({ error: '请上传 pptx 文件（base64）' });
+  const buffer = Buffer.from(data, 'base64');
+  res.json(await extractFromPptx(buffer, name || 'uploaded.pptx'));
+}));
+
+app.post('/api/templates', wrap(async (req, res) => {
+  const { stagingId, name } = req.body || {};
+  if (!stagingId || !/^[a-f0-9]{16}$/.test(stagingId)) {
+    return res.status(400).json({ error: '参数不完整' });
+  }
+  res.json({ id: saveTemplate(stagingId, name), templates: listDescriptors() });
+}));
+
 app.post('/api/outline', wrap(async (req, res) => {
   const { topic, pages, extra } = req.body;
   if (!topic || !topic.trim()) return res.status(400).json({ error: '请提供主题' });
@@ -110,30 +159,38 @@ app.post('/api/outline', wrap(async (req, res) => {
   res.json(outline);
 }));
 
-// SSE：逐页生成并推送
+// SSE：逐页生成并推送（每页附带该模板的场景图）
 app.post('/api/slides', async (req, res) => {
   try {
     if (req.body.apiKey) setApiKey(req.body.apiKey);
-    const { outline } = req.body;
+    const { outline, templateId } = req.body;
     if (!outline || !Array.isArray(outline.pages)) {
       return res.status(400).json({ error: '大纲格式不正确' });
     }
+    const d = loadDescriptor(templateId);
+    const constraints = d.constraints && d.constraints.chars;
+    const freeStyle = buildFreeStyle(d);
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
       Connection: 'keep-alive',
     });
     const send = (event, data) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    send('meta', { canvas: d.canvas, templateId: d._id });
 
-    for (let i = 0; i < outline.pages.length; i++) {
+    const total = outline.pages.length;
+    let degraded = 0; // 重试失败、走了兜底页的页数
+    for (let i = 0; i < total; i++) {
       try {
-        const slide = await generateSlide({ outline, index: i });
-        send('slide', slide);
+        const slide = await generateSlide({ outline, index: i, constraints, freeStyle });
+        if (slide._recovered) degraded++;
+        const scene = resolve(d, [slide], { title: outline.title, index: i, total }).slides[0];
+        send('slide', { ...slide, scene });
       } catch (err) {
         send('slideError', { index: i, error: err.message });
       }
     }
-    send('done', { total: outline.pages.length });
+    send('done', { total, degraded });
     res.end();
   } catch (err) {
     if (res.headersSent) {
@@ -146,20 +203,28 @@ app.post('/api/slides', async (req, res) => {
 });
 
 app.post('/api/revise', wrap(async (req, res) => {
-  const { slides, instruction } = req.body;
+  const { slides, instruction, templateId } = req.body;
   if (!Array.isArray(slides) || !instruction) {
     return res.status(400).json({ error: '参数不完整' });
   }
-  const result = await reviseSlides({ slides, instruction });
-  res.json({ slides: result });
+  const d = loadDescriptor(templateId);
+  const constraints = d.constraints && d.constraints.chars;
+  const result = await reviseSlides({ slides, instruction, constraints });
+  const scenes = resolve(d, result, { title: req.body.title }).slides;
+  res.json({ slides: result, scenes, canvas: d.canvas });
 }));
 
 app.post('/api/export', wrap(async (req, res) => {
-  const { slides, title } = req.body;
+  const { slides, title, templateId } = req.body;
   if (!Array.isArray(slides) || slides.length === 0) {
     return res.status(400).json({ error: '没有可导出的幻灯片' });
   }
-  const buf = await buildPptx(slides, title);
+  // free 自由排版页：Chrome headless 截图 → PNG data URL，逐页串行
+  const renderFree = async (slide) => {
+    const png = await htmlShot.renderToPng(slide.html);
+    return { free: true, pngData: `data:image/png;base64,${png.toString('base64')}` };
+  };
+  const buf = await buildPptx(slides, title, templateId, { renderFree });
   const filename = encodeURIComponent((title || 'slides') + '.pptx');
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.presentationml.presentation');
   res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${filename}`);

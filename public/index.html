@@ -32,6 +32,7 @@
   <main>
     <!-- 左侧：对话与流程控制 -->
     <section id="panel">
+      <div id="tpl-gallery"></div>
       <div id="messages">
         <div class="welcome">
           <div class="welcome-logo">卷</div>
@@ -46,9 +47,19 @@
       </div>
 
       <div id="outline-box" class="hidden">
-        <div class="outline-header">
+        <div class="outline-header" id="outline-header" title="点击展开 / 收起大纲">
           <span>大纲</span>
-          <span class="outline-hint">可修改页数后重新生成</span>
+          <span class="outline-hint" id="outline-hint">可修改页数后重新生成</span>
+          <span class="outline-chevron">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+          </span>
+        </div>
+        <div id="outline-tpl">
+          <div class="outline-tpl-label">
+            <span>选择模板风格</span>
+            <span class="outline-hint">点击预览切换，生成将使用选中的模板</span>
+          </div>
+          <div id="outline-tpl-list"></div>
         </div>
         <div id="outline-list"></div>
         <div class="outline-actions">
@@ -107,6 +118,10 @@
 
   <div id="toasts"></div>
 
+  <input type="file" id="tpl-upload-input" accept=".pptx" hidden />
+
+  <script src="dom-painter.js"></script>
+  <script src="html-frame.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

@@ -5,6 +5,9 @@ const state = {
   phase: 'idle',     // idle | outline | slides
   topic: '',
   busy: false,
+  templateId: localStorage.getItem('king-ppt.template') || 'classic-blue',
+  templates: [],     // /api/templates 列表缓存
+  canvas: null,      // 当前模板画布（SSE meta / revise 响应更新）
   providersData: null,          // /api/providers 缓存
   settingsView: 'services',     // 设置面板当前视图：services | defaults
   selectedInstanceId: undefined, // 模型服务当前展开的供应商（undefined=默认展开第一个，null=全部收起）
@@ -98,8 +101,30 @@ function setBusy(busy) {
 }
 
 // ---------- 大纲 ----------
+function updateOutlineHint() {
+  $('outline-hint').textContent = state.phase === 'slides'
+    ? '点击条目可定位到对应页'
+    : '可修改页数后重新生成';
+}
+
+// 点击大纲条目：平滑滚动到对应幻灯片并高亮闪烁
+function scrollToSlide(i) {
+  const card = slidesEl.querySelector(`.slide-card[data-index="${i}"]`);
+  if (!card) return;
+  card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  card.classList.remove('flash');
+  void card.offsetWidth; // 重启动画
+  card.classList.add('flash');
+}
+
 function renderOutline(outline) {
-  $('outline-box').classList.remove('hidden');
+  const box = $('outline-box');
+  box.classList.remove('hidden', 'collapsed');
+  // 大纲出现后模板决策收敛到大纲卡片内，顶部画廊让位
+  $('tpl-gallery').classList.add('hidden');
+  // 模板选择条只在「待生成」阶段出现；生成后切换模板不会重排已有页，不再展示
+  $('outline-tpl').classList.toggle('hidden', state.phase !== 'outline');
+  updateOutlineHint();
   const list = $('outline-list');
   list.innerHTML = '';
   const titleDiv = document.createElement('div');
@@ -108,10 +133,16 @@ function renderOutline(outline) {
   list.appendChild(titleDiv);
   outline.pages.forEach((p, i) => {
     const item = document.createElement('div');
-    item.className = 'outline-item';
+    const clickable = state.phase === 'slides' && Boolean(state.slides[i]);
+    item.className = `outline-item${clickable ? ' clickable' : ''}`;
     item.innerHTML = `<span class="no">${i + 1}</span><span>${esc(p.heading)} — ${esc(p.intent)}</span>`;
+    if (clickable) {
+      item.title = '点击定位到该页';
+      item.addEventListener('click', () => scrollToSlide(i));
+    }
     list.appendChild(item);
   });
+  renderOutlineTplPicker();
 }
 
 async function doOutline(topic, pages) {
@@ -153,7 +184,7 @@ async function doSlides() {
     const resp = await fetch('/api/slides', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ outline: state.outline }),
+      body: JSON.stringify({ outline: state.outline, templateId: state.templateId }),
     });
     if (!resp.ok) {
       const data = await resp.json().catch(() => ({}));
@@ -179,7 +210,9 @@ async function doSlides() {
         if (!eventMatch || !dataMatch) continue;
         const event = eventMatch[1];
         const data = JSON.parse(dataMatch[1]);
-        if (event === 'slide') {
+        if (event === 'meta') {
+          state.canvas = data.canvas;
+        } else if (event === 'slide') {
           state.slides[data.index] = data;
           renderSlide(data);
           done++;
@@ -187,8 +220,13 @@ async function doSlides() {
         } else if (event === 'slideError') {
           addMessage(`第 ${data.index + 1} 页生成失败：${data.error}`, 'agent', true);
         } else if (event === 'done') {
-          finishTyping(msg, `全部 ${total} 页生成完成。可以继续输入修改指令，或点击右上角导出。`);
+          const note = data.degraded
+            ? `其中 ${data.degraded} 页多次生成异常，已按大纲自动降级为基础版式（可用修改指令重写该页）。`
+            : '';
+          finishTyping(msg, `全部 ${total} 页生成完成。${note}可以继续输入修改指令，或点击右上角导出。`);
           state.phase = 'slides';
+          renderOutline(state.outline); // 重建为可点击定位形态
+          $('outline-box').classList.add('collapsed'); // 收起，点标题栏可再展开
           $('export-btn').disabled = false;
           toast('幻灯片生成完成', 'ok');
         } else if (event === 'fatal') {
@@ -210,9 +248,14 @@ async function doRevise(instruction) {
   setBusy(true);
   const msg = addTyping('正在修改');
   try {
-    const resp = await api('/api/revise', { slides: state.slides, instruction });
+    const resp = await api('/api/revise', { slides: state.slides, instruction, templateId: state.templateId, title: state.outline?.title });
     const data = await resp.json();
     state.slides = data.slides;
+    if (data.canvas) state.canvas = data.canvas;
+    // scenes 与 slides 等长，按 index 对应：挂到 slide 上供 renderSlide 使用
+    (data.scenes || []).forEach((scene, i) => {
+      if (state.slides[i]) state.slides[i].scene = scene;
+    });
     slidesEl.innerHTML = '';
     state.slides.forEach((s) => s && renderSlide(s));
     finishTyping(msg, '修改完成。');
@@ -239,6 +282,18 @@ function renderSlide(s) {
       .forEach((el) => slidesEl.appendChild(el));
   }
   const num = `<div class="slide-num">${s.index + 1}</div>`;
+  // free 自由排版页：HTML iframe 渲染，不走场景图
+  if (s.type === 'free' && s.html) {
+    card.innerHTML = num;
+    card.appendChild(HtmlFrame.build(s.html));
+    return;
+  }
+  // Scene Graph 驱动渲染（新数据）；无 scene 的旧数据走下方手写渲染兜底
+  if (s.scene) {
+    card.innerHTML = num;
+    card.appendChild(DomPainter.paintInto(s.scene, state.templateId, state.canvas || undefined));
+    return;
+  }
   let inner = '';
   if (s.type === 'title' || s.type === 'section') {
     inner = `<div class="slide slide-cover">
@@ -259,6 +314,38 @@ function renderSlide(s) {
       <div class="slide-title">${esc(s.title)}</div><div class="title-bar"></div>
       <div class="cols">${col(s.leftTitle, s.leftBullets)}${col(s.rightTitle, s.rightBullets)}</div>
     </div>`;
+  } else if (s.type === 'table') {
+    const rows = (s.rows || []).map((r) => (Array.isArray(r) ? r : [r]));
+    inner = `<div class="slide">
+      <div class="slide-title">${esc(s.title)}</div><div class="title-bar"></div>
+      <table class="slide-table">
+        <thead><tr>${(s.headers || []).map((h) => `<th>${esc(h)}</th>`).join('')}</tr></thead>
+        <tbody>${rows.map((r) => `<tr>${r.map((c) => `<td>${esc(c)}</td>`).join('')}</tr>`).join('')}</tbody>
+      </table>
+    </div>`;
+  } else if (s.type === 'steps') {
+    inner = `<div class="slide">
+      <div class="slide-title">${esc(s.title)}</div><div class="title-bar"></div>
+      <div class="steps">${(s.steps || []).map((st, i) => `<div class="step">
+        <div class="step-num">${i + 1}</div>
+        <div class="step-title">${esc(st.title)}</div>
+        <div class="step-desc">${esc(st.desc)}</div>
+      </div>`).join('')}</div>
+    </div>`;
+  } else if (s.type === 'quote') {
+    inner = `<div class="slide slide-quote">
+      <div class="quote-mark">“</div>
+      <div class="quote-text">${esc(s.quote)}</div>
+      ${s.author ? `<div class="quote-author">—— ${esc(s.author)}</div>` : ''}
+    </div>`;
+  } else if (s.type === 'stats') {
+    inner = `<div class="slide">
+      <div class="slide-title">${esc(s.title)}</div><div class="title-bar"></div>
+      <div class="stats">${(s.stats || []).map((st) => `<div class="stat">
+        <div class="stat-value">${esc(st.value)}</div>
+        <div class="stat-label">${esc(st.label)}</div>
+      </div>`).join('')}</div>
+    </div>`;
   }
   card.innerHTML = num + inner;
 }
@@ -267,6 +354,246 @@ function esc(str) {
   return String(str ?? '').replace(/[&<>"']/g, (c) => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
   }[c]));
+}
+
+// ================= 模板画廊 =================
+const tplSampleCache = {}; // templateId → { canvas, scenes }
+
+async function loadTemplates() {
+  try {
+    const resp = await api('/api/templates', undefined, 'GET');
+    const data = await resp.json();
+    state.templates = data.templates || [];
+    renderGallery();
+    // 启动时用当前模板的画布初始化（SSE meta / revise 也会更新）
+    if (state.templates.some((t) => t.id === state.templateId)) {
+      fetchTplSample(state.templateId).then(({ canvas }) => { state.canvas = canvas; }).catch(() => {});
+    }
+  } catch (err) {
+    $('tpl-gallery').innerHTML = `<div class="tpl-gallery-error muted">模板列表加载失败：${esc(err.message)}</div>`;
+  }
+}
+
+// 模板卡片（顶部画廊与大纲内选择条共用）
+function buildTplCard(tpl) {
+  const card = document.createElement('div');
+  card.className = `tpl-card${tpl.id === state.templateId ? ' active' : ''}`;
+  card.dataset.tpl = tpl.id;
+  card.innerHTML = `
+    <div class="tpl-thumb"><div class="tpl-thumb-loading muted">…</div></div>
+    <div class="tpl-meta">
+      <span class="tpl-name">${esc(tpl.name)}</span>
+      <span class="tpl-source ${tpl.source === 'uploaded' ? 'uploaded' : ''}">${tpl.source === 'uploaded' ? '上传' : '预设'}</span>
+    </div>`;
+  card.addEventListener('click', () => selectTemplate(tpl.id));
+  paintGalleryThumb(tpl.id, card.querySelector('.tpl-thumb'));
+  return card;
+}
+
+function buildTplUploadCard() {
+  const upload = document.createElement('div');
+  upload.className = 'tpl-card tpl-upload';
+  upload.innerHTML = `<div class="tpl-upload-plus">＋</div><div class="tpl-upload-text">上传模板</div>`;
+  upload.addEventListener('click', () => $('tpl-upload-input').click());
+  return upload;
+}
+
+function renderGallery() {
+  const gallery = $('tpl-gallery');
+  gallery.innerHTML = '';
+  for (const tpl of state.templates) gallery.appendChild(buildTplCard(tpl));
+  gallery.appendChild(buildTplUploadCard());
+  renderOutlineTplPicker(); // 大纲内选择条与画廊保持同步
+}
+
+// 大纲卡片内的模板选择条：生成前的模板决策点
+function renderOutlineTplPicker() {
+  const wrap = $('outline-tpl-list');
+  if (!wrap) return;
+  wrap.innerHTML = '';
+  for (const tpl of state.templates) wrap.appendChild(buildTplCard(tpl));
+  wrap.appendChild(buildTplUploadCard());
+}
+
+async function fetchTplSample(id) {
+  if (!tplSampleCache[id]) {
+    const resp = await api(`/api/templates/${encodeURIComponent(id)}/sample`, undefined, 'GET');
+    tplSampleCache[id] = await resp.json();
+  }
+  return tplSampleCache[id];
+}
+
+async function paintGalleryThumb(id, thumbEl) {
+  try {
+    const { canvas, scenes } = await fetchTplSample(id);
+    thumbEl.innerHTML = '';
+    if (scenes && scenes[0]) {
+      thumbEl.appendChild(DomPainter.paintInto(scenes[0], id, canvas));
+    }
+  } catch {
+    thumbEl.innerHTML = '<div class="tpl-thumb-loading muted">预览失败</div>';
+  }
+}
+
+async function selectTemplate(id) {
+  if (id === state.templateId) return;
+  state.templateId = id;
+  localStorage.setItem('king-ppt.template', id);
+  document.querySelectorAll('.tpl-card[data-tpl]').forEach((c) => {
+    c.classList.toggle('active', c.dataset.tpl === id);
+  });
+  try {
+    const { canvas } = await fetchTplSample(id);
+    state.canvas = canvas;
+  } catch { /* 画布沿用旧值，meta 事件也会更新 */ }
+  // 已有 slides 用新模板场景重渲染（场景随 SSE/revise 下发，旧场景沿用各自模板重画）
+  state.slides.forEach((s) => s && s.scene && renderSlide(s));
+}
+
+// ---------- 上传模板 → 确认面板 ----------
+$('tpl-upload-input').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  e.target.value = ''; // 允许重复选同一文件
+  if (!file) return;
+  if (file.size > 20 * 1024 * 1024) {
+    toast('文件超过 20MB 上限', 'error');
+    return;
+  }
+  const msg = addTyping(`正在解析模板「${file.name}」`);
+  try {
+    const dataUrl = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(new Error('文件读取失败'));
+      reader.readAsDataURL(file);
+    });
+    const base64 = String(dataUrl).split(',')[1] || '';
+    const resp = await api('/api/templates/extract', { name: file.name, data: base64 });
+    const result = await resp.json();
+    finishTyping(msg, `模板「${file.name}」解析完成，请在确认面板中核对识别结果。`);
+    openTemplateConfirm(result);
+  } catch (err) {
+    finishTyping(msg, `模板解析失败：${err.message}`, true);
+    toast(`模板解析失败：${err.message}`, 'error');
+  }
+});
+
+const CONFIDENCE_LABELS = {
+  canvas: '画布', palette: '色板', typography: '字体', background: '背景',
+  decorations: '装饰构件', families: '页面家族', typeMapping: '类型映射',
+};
+const FAMILY_LABELS = { cover: '封面', section: '章节页', content: '内容页', closing: '结尾页' };
+
+function openTemplateConfirm({ stagingId, descriptor, sampleScenes }) {
+  const d = descriptor || {};
+  const canvas = d.canvas || { width: 13.33, height: 7.5 };
+  const overlay = document.createElement('div');
+  overlay.className = 'tpl-confirm-overlay';
+  overlay.innerHTML = `
+    <div class="tpl-confirm">
+      <div class="tpl-confirm-head">
+        <span>确认模板识别结果</span>
+        <button class="btn btn-icon" data-role="close" title="关闭">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div class="tpl-confirm-body">
+        <div class="tpl-confirm-left" data-role="samples"></div>
+        <div class="tpl-confirm-right">
+          <div class="tpl-sec">
+            <div class="tpl-sec-title">识别结果</div>
+            <div class="tpl-palette">
+              ${Object.entries(d.palette || {}).map(([role, hex]) => `
+                <div class="tpl-swatch" title="${esc(role)} #${esc(hex)}">
+                  <span class="tpl-swatch-color" style="background:#${esc(hex)}"></span>
+                  <span class="tpl-swatch-name">${esc(role)}</span>
+                </div>`).join('')}
+            </div>
+            <div class="tpl-kv">
+              ${Object.entries((d.typography || {}).fonts || {}).map(([k, f]) => `
+                <div><span class="muted">${esc(k)}</span> ${esc([f.latin, f.ea].filter(Boolean).join(' / ') || '—')}</div>`).join('')}
+              <div><span class="muted">画布</span> ${canvas.width} × ${canvas.height} in</div>
+            </div>
+          </div>
+          <div class="tpl-sec">
+            <div class="tpl-sec-title">页面家族</div>
+            <div class="tpl-families">
+              ${Object.entries(d.families || {}).map(([fam, f]) => `
+                <div class="tpl-family">
+                  <span class="tpl-family-name">${esc(FAMILY_LABELS[fam] || fam)}</span>
+                  <span class="tpl-family-variants">${Object.keys((f || {}).variants || {}).map((v) => `<span class="tpl-variant">${esc(v)}</span>`).join('')}</span>
+                </div>`).join('')}
+            </div>
+          </div>
+          <div class="tpl-sec">
+            <div class="tpl-sec-title">风险提示</div>
+            <div class="tpl-risks">
+              ${Object.entries((d.meta || {}).confidence || {}).map(([k, v]) => `
+                <div class="tpl-risk${v < 0.7 ? ' low' : ''}">
+                  <span>${esc(CONFIDENCE_LABELS[k] || k)}</span>
+                  <span>${Math.round(v * 100)}%${v < 0.7 ? ' · 置信度较低' : ''}</span>
+                </div>`).join('') || '<div class="muted">无置信度数据</div>'}
+              ${(() => {
+                const n = d._extractNotes || {};
+                const flags = [
+                  ['footerDetected', '页脚'], ['titleSlotDetected', '标题槽位'], ['overlayDetected', '渐变蒙版'],
+                ];
+                return `<div class="tpl-notes">${flags.map(([k, label]) =>
+                  `<span class="tpl-note ${n[k] ? 'on' : ''}">${n[k] ? '✓' : '✕'} ${label}</span>`).join('')}</div>`;
+              })()}
+            </div>
+          </div>
+          <div class="tpl-sec tpl-save-row">
+            <input data-role="name" class="tpl-name-input" value="${esc((d.meta || {}).name || '上传模板')}" placeholder="模板名称" spellcheck="false" />
+            <button class="btn btn-primary" data-role="save">保存模板</button>
+          </div>
+        </div>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  const close = () => overlay.remove();
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  overlay.querySelector('[data-role="close"]').addEventListener('click', close);
+
+  // ① 左侧样例页：extract 返回的 sampleScenes 中 image.src 指向服务器 staging
+  // 临时目录，前端不可达——不传 templateId，dom-painter 自动以占位色块代替图片
+  const samplesEl = overlay.querySelector('[data-role="samples"]');
+  const SAMPLE_LABELS = ['封面', '章节页', '内容页'];
+  (sampleScenes || []).forEach((scene, i) => {
+    const wrap = document.createElement('div');
+    wrap.className = 'tpl-sample';
+    wrap.appendChild(DomPainter.paintInto(scene, null, canvas));
+    const label = document.createElement('div');
+    label.className = 'tpl-sample-label muted';
+    label.textContent = SAMPLE_LABELS[i] || `样例 ${i + 1}`;
+    wrap.appendChild(label);
+    samplesEl.appendChild(wrap);
+  });
+
+  overlay.querySelector('[data-role="save"]').addEventListener('click', async (e) => {
+    const btn = e.currentTarget;
+    const name = overlay.querySelector('[data-role="name"]').value.trim();
+    if (!name) {
+      toast('请填写模板名称', 'error');
+      return;
+    }
+    btn.disabled = true;
+    btn.textContent = '保存中…';
+    try {
+      const resp = await api('/api/templates', { stagingId, name });
+      const data = await resp.json();
+      close();
+      state.templates = data.templates || state.templates;
+      state.templateId = null; // 强制 selectTemplate 生效
+      renderGallery();
+      await selectTemplate(data.id);
+      toast(`模板「${name}」已保存`, 'ok');
+    } catch (err) {
+      btn.disabled = false;
+      btn.textContent = '保存模板';
+      toast(`保存失败：${err.message}`, 'error');
+    }
+  });
 }
 
 // ---------- 事件 ----------
@@ -307,10 +634,13 @@ $('gen-slides-btn').addEventListener('click', doSlides);
 $('regen-outline-btn').addEventListener('click', () => {
   if (state.topic && !state.busy) doOutline(state.topic, Number($('pages').value) || 8);
 });
+$('outline-header').addEventListener('click', () => {
+  $('outline-box').classList.toggle('collapsed');
+});
 
 $('export-btn').addEventListener('click', async () => {
   try {
-    const resp = await api('/api/export', { slides: state.slides, title: state.outline?.title });
+    const resp = await api('/api/export', { slides: state.slides, title: state.outline?.title, templateId: state.templateId });
     const blob = await resp.blob();
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -1280,3 +1610,4 @@ async function refreshModelChip() {
   }
 }
 refreshModelChip();
+loadTemplates();
