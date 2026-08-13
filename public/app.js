@@ -4,10 +4,15 @@ const state = {
   slides: [],        // 已生成的页（含 index）
   phase: 'idle',     // idle | outline | slides
   topic: '',
+  pages: 8,
   busy: false,
   templateId: localStorage.getItem('king-ppt.template') || 'classic-blue',
   templates: [],     // /api/templates 列表缓存
   canvas: null,      // 当前模板画布（SSE meta / revise 响应更新）
+  sessionId: null,   // 当前会话（后端持久化）
+  sessions: [],      // /api/sessions 列表缓存
+  messages: [],      // 结构化对话记录（持久化 & 恢复用）
+  category: '全部',  // 首页模板分类
   providersData: null,          // /api/providers 缓存
   settingsView: 'services',     // 设置面板当前视图：services | defaults
   selectedInstanceId: undefined, // 模型服务当前展开的供应商（undefined=默认展开第一个，null=全部收起）
@@ -74,6 +79,8 @@ function addMessage(text, who = 'user', isError = false) {
   div.textContent = text;
   messagesEl.appendChild(div);
   messagesEl.scrollTop = messagesEl.scrollHeight;
+  state.messages.push({ role: who, text, error: isError, ts: Date.now() });
+  scheduleSave();
   return div;
 }
 
@@ -91,13 +98,37 @@ function finishTyping(div, text, isError = false) {
   div.textContent = text;
   if (isError) div.classList.add('error');
   messagesEl.scrollTop = messagesEl.scrollHeight;
+  state.messages.push({ role: 'agent', text, error: isError, ts: Date.now() });
+  scheduleSave();
+}
+
+// 从持久化的 messages 数组重建对话气泡（不含打字动画）
+function renderMessages() {
+  for (const m of state.messages) {
+    const div = document.createElement('div');
+    div.className = `msg msg-${m.role}${m.error ? ' error' : ''}`;
+    div.textContent = m.text;
+    messagesEl.appendChild(div);
+  }
+  messagesEl.scrollTop = messagesEl.scrollHeight;
 }
 
 function setBusy(busy) {
   state.busy = busy;
-  $('send-btn').disabled = busy;
-  $('gen-slides-btn').disabled = busy;
+  ['send-btn', 'gen-slides-btn', 'home-send-btn'].forEach((id) => {
+    const el = $(id);
+    if (el) el.disabled = busy;
+  });
   inputEl.disabled = busy;
+  const hi = $('home-input');
+  if (hi) hi.disabled = busy;
+}
+
+// ---------- 视图切换（idle 首页 ↔ 工作视图） ----------
+function showView() {
+  const idle = state.phase === 'idle';
+  $('home').classList.toggle('hidden', !idle);
+  $('work-view').classList.toggle('hidden', idle);
 }
 
 // ---------- 大纲 ----------
@@ -120,8 +151,6 @@ function scrollToSlide(i) {
 function renderOutline(outline) {
   const box = $('outline-box');
   box.classList.remove('hidden', 'collapsed');
-  // 大纲出现后模板决策收敛到大纲卡片内，顶部画廊让位
-  $('tpl-gallery').classList.add('hidden');
   // 模板选择条只在「待生成」阶段出现；生成后切换模板不会重排已有页，不再展示
   $('outline-tpl').classList.toggle('hidden', state.phase !== 'outline');
   updateOutlineHint();
@@ -155,7 +184,9 @@ async function doOutline(topic, pages) {
     state.outline = outline;
     state.phase = 'outline';
     finishTyping(msg, `大纲已生成：《${outline.title}》，共 ${outline.pages.length} 页。确认后点击「生成幻灯片」。`);
+    $('work-title').textContent = `《${outline.title}》`;
     renderOutline(outline);
+    scheduleSave();
   } catch (err) {
     finishTyping(msg, `大纲生成失败：${err.message}`, true);
     toast(err.message, 'error');
@@ -217,6 +248,7 @@ async function doSlides() {
           renderSlide(data);
           done++;
           updateProgress(done, total);
+          scheduleSave();
         } else if (event === 'slideError') {
           addMessage(`第 ${data.index + 1} 页生成失败：${data.error}`, 'agent', true);
         } else if (event === 'done') {
@@ -229,6 +261,7 @@ async function doSlides() {
           $('outline-box').classList.add('collapsed'); // 收起，点标题栏可再展开
           $('export-btn').disabled = false;
           toast('幻灯片生成完成', 'ok');
+          flushSave(); // 成品立即落盘，防止快速关闭丢失
         } else if (event === 'fatal') {
           finishTyping(msg, `生成中断：${data.error}`, true);
         }
@@ -259,6 +292,7 @@ async function doRevise(instruction) {
     slidesEl.innerHTML = '';
     state.slides.forEach((s) => s && renderSlide(s));
     finishTyping(msg, '修改完成。');
+    scheduleSave();
   } catch (err) {
     finishTyping(msg, `修改失败：${err.message}`, true);
     toast(err.message, 'error');
@@ -356,25 +390,130 @@ function esc(str) {
   }[c]));
 }
 
-// ================= 模板画廊 =================
+// ================= 模板 =================
 const tplSampleCache = {}; // templateId → { canvas, scenes }
+
+// 首页分类 tab（对标 Kimi）；真实模板归入 全部/自定义，行业分类用占位卡填充
+const HOME_CATEGORIES = ['全部', '自定义', '战略咨询', '金融投资', '工作汇报', '宣传推广', '学术研究'];
+// 纯色占位卡：真实模板补齐前的视觉填充，点击提示即将上线
+const FAKE_TEMPLATES = [
+  { name: '战略蓝图', color: '#1f4e79', category: '战略咨询' },
+  { name: '咨询灰调', color: '#334155', category: '战略咨询' },
+  { name: '金融鎏金', color: '#b7791f', category: '金融投资' },
+  { name: '资本深红', color: '#9b2c2c', category: '金融投资' },
+  { name: '汇报青绿', color: '#0f766e', category: '工作汇报' },
+  { name: '简报天青', color: '#2e86c1', category: '工作汇报' },
+  { name: '推广品红', color: '#be185d', category: '宣传推广' },
+  { name: '活力橙', color: '#c2410c', category: '宣传推广' },
+  { name: '学术墨蓝', color: '#1e3a5f', category: '学术研究' },
+  { name: '研究石青', color: '#0e7490', category: '学术研究' },
+];
 
 async function loadTemplates() {
   try {
     const resp = await api('/api/templates', undefined, 'GET');
     const data = await resp.json();
     state.templates = data.templates || [];
-    renderGallery();
+    renderHomeTemplates();
+    renderTemplateChip();
     // 启动时用当前模板的画布初始化（SSE meta / revise 也会更新）
     if (state.templates.some((t) => t.id === state.templateId)) {
       fetchTplSample(state.templateId).then(({ canvas }) => { state.canvas = canvas; }).catch(() => {});
     }
   } catch (err) {
-    $('tpl-gallery').innerHTML = `<div class="tpl-gallery-error muted">模板列表加载失败：${esc(err.message)}</div>`;
+    const grid = $('home-grid');
+    if (grid) grid.innerHTML = `<div class="muted" style="grid-column:1/-1;padding:12px">模板列表加载失败：${esc(err.message)}</div>`;
   }
 }
 
-// 模板卡片（顶部画廊与大纲内选择条共用）
+// ---------- 首页模板网格 + 分类 tab ----------
+function renderHomeTemplates() {
+  renderHomeTabs();
+  renderHomeGrid();
+}
+
+function renderHomeTabs() {
+  const wrap = $('home-tabs');
+  if (!wrap) return;
+  wrap.innerHTML = '';
+  for (const cat of HOME_CATEGORIES) {
+    const btn = document.createElement('button');
+    btn.className = `home-tab${cat === state.category ? ' active' : ''}`;
+    btn.textContent = cat;
+    btn.addEventListener('click', () => { state.category = cat; renderHomeTemplates(); });
+    wrap.appendChild(btn);
+  }
+}
+
+function renderHomeGrid() {
+  const grid = $('home-grid');
+  if (!grid) return;
+  grid.innerHTML = '';
+  const cat = state.category;
+  if (cat === '全部' || cat === '自定义') {
+    const reals = cat === '自定义'
+      ? state.templates.filter((t) => t.source === 'uploaded')
+      : state.templates;
+    for (const tpl of reals) grid.appendChild(buildHomeCard(tpl));
+    grid.appendChild(buildHomeUploadCard());
+    if (cat === '全部') {
+      for (const f of FAKE_TEMPLATES) grid.appendChild(buildFakeCard(f));
+    }
+  } else {
+    for (const f of FAKE_TEMPLATES.filter((f) => f.category === cat)) grid.appendChild(buildFakeCard(f));
+  }
+}
+
+function buildHomeCard(tpl) {
+  const card = document.createElement('div');
+  card.className = `home-card${tpl.id === state.templateId ? ' active' : ''}`;
+  card.dataset.tpl = tpl.id;
+  card.innerHTML = `
+    <div class="home-card-thumb"><div class="home-card-thumb-loading muted">…</div></div>
+    <div class="home-card-meta">
+      <span class="home-card-name">${esc(tpl.name)}</span>
+      <span class="home-card-tag ${tpl.source === 'uploaded' ? 'uploaded' : ''}">${tpl.source === 'uploaded' ? '上传' : '预设'}</span>
+    </div>`;
+  card.addEventListener('click', () => selectTemplate(tpl.id));
+  paintThumb(tpl.id, card.querySelector('.home-card-thumb'));
+  return card;
+}
+
+function buildHomeUploadCard() {
+  const card = document.createElement('div');
+  card.className = 'home-card upload';
+  card.innerHTML = `
+    <div class="home-card-thumb">
+      <div class="home-card-thumb-plus">＋</div>
+      <div class="muted" style="font-size:12px">上传 .pptx 模板</div>
+    </div>
+    <div class="home-card-meta"><span class="home-card-name">上传模板</span></div>`;
+  card.addEventListener('click', () => $('tpl-upload-input').click());
+  return card;
+}
+
+function buildFakeCard(fake) {
+  const card = document.createElement('div');
+  card.className = 'home-card fake';
+  card.innerHTML = `
+    <div class="home-card-thumb" style="background:linear-gradient(135deg, ${fake.color}, ${fake.color}cc)">
+      <span class="home-card-badge">即将上线</span>
+    </div>
+    <div class="home-card-meta"><span class="home-card-name">${esc(fake.name)}</span><span class="home-card-tag">${esc(fake.category)}</span></div>`;
+  card.addEventListener('click', () => toast('该模板即将上线，敬请期待', 'info'));
+  return card;
+}
+
+// 输入框工具条上的当前模板 chip
+function renderTemplateChip() {
+  const tpl = state.templates.find((t) => t.id === state.templateId);
+  const nameEl = document.querySelector('#home-tpl-chip .home-tpl-chip-name');
+  const thumbEl = document.querySelector('#home-tpl-chip .home-tpl-chip-thumb');
+  if (nameEl) nameEl.textContent = tpl ? tpl.name : '选择模板';
+  if (thumbEl && tpl) paintThumb(tpl.id, thumbEl);
+}
+
+// 模板卡片（大纲内选择条复用）
 function buildTplCard(tpl) {
   const card = document.createElement('div');
   card.className = `tpl-card${tpl.id === state.templateId ? ' active' : ''}`;
@@ -386,7 +525,7 @@ function buildTplCard(tpl) {
       <span class="tpl-source ${tpl.source === 'uploaded' ? 'uploaded' : ''}">${tpl.source === 'uploaded' ? '上传' : '预设'}</span>
     </div>`;
   card.addEventListener('click', () => selectTemplate(tpl.id));
-  paintGalleryThumb(tpl.id, card.querySelector('.tpl-thumb'));
+  paintThumb(tpl.id, card.querySelector('.tpl-thumb'));
   return card;
 }
 
@@ -396,14 +535,6 @@ function buildTplUploadCard() {
   upload.innerHTML = `<div class="tpl-upload-plus">＋</div><div class="tpl-upload-text">上传模板</div>`;
   upload.addEventListener('click', () => $('tpl-upload-input').click());
   return upload;
-}
-
-function renderGallery() {
-  const gallery = $('tpl-gallery');
-  gallery.innerHTML = '';
-  for (const tpl of state.templates) gallery.appendChild(buildTplCard(tpl));
-  gallery.appendChild(buildTplUploadCard());
-  renderOutlineTplPicker(); // 大纲内选择条与画廊保持同步
 }
 
 // 大纲卡片内的模板选择条：生成前的模板决策点
@@ -423,7 +554,7 @@ async function fetchTplSample(id) {
   return tplSampleCache[id];
 }
 
-async function paintGalleryThumb(id, thumbEl) {
+async function paintThumb(id, thumbEl) {
   try {
     const { canvas, scenes } = await fetchTplSample(id);
     thumbEl.innerHTML = '';
@@ -431,7 +562,7 @@ async function paintGalleryThumb(id, thumbEl) {
       thumbEl.appendChild(DomPainter.paintInto(scenes[0], id, canvas));
     }
   } catch {
-    thumbEl.innerHTML = '<div class="tpl-thumb-loading muted">预览失败</div>';
+    thumbEl.innerHTML = '<div class="muted" style="font-size:11px;display:flex;height:100%;align-items:center;justify-content:center">预览失败</div>';
   }
 }
 
@@ -439,15 +570,17 @@ async function selectTemplate(id) {
   if (id === state.templateId) return;
   state.templateId = id;
   localStorage.setItem('king-ppt.template', id);
-  document.querySelectorAll('.tpl-card[data-tpl]').forEach((c) => {
+  document.querySelectorAll('.tpl-card[data-tpl], .home-card[data-tpl]').forEach((c) => {
     c.classList.toggle('active', c.dataset.tpl === id);
   });
+  renderTemplateChip();
   try {
     const { canvas } = await fetchTplSample(id);
     state.canvas = canvas;
   } catch { /* 画布沿用旧值，meta 事件也会更新 */ }
   // 已有 slides 用新模板场景重渲染（场景随 SSE/revise 下发，旧场景沿用各自模板重画）
   state.slides.forEach((s) => s && s.scene && renderSlide(s));
+  scheduleSave();
 }
 
 // ---------- 上传模板 → 确认面板 ----------
@@ -585,7 +718,8 @@ function openTemplateConfirm({ stagingId, descriptor, sampleScenes }) {
       close();
       state.templates = data.templates || state.templates;
       state.templateId = null; // 强制 selectTemplate 生效
-      renderGallery();
+      renderHomeTemplates();
+      renderOutlineTplPicker();
       await selectTemplate(data.id);
       toast(`模板「${name}」已保存`, 'ok');
     } catch (err) {
@@ -623,11 +757,215 @@ inputEl.addEventListener('keydown', (e) => {
   }
 });
 
-document.querySelectorAll('.example-chip').forEach((chip) => {
-  chip.addEventListener('click', () => {
-    inputEl.value = chip.textContent;
-    inputEl.focus();
+// ---------- 首页创作中枢事件 ----------
+async function submitHome() {
+  const hi = $('home-input');
+  const text = hi.value.trim();
+  if (!text || state.busy) return;
+  const pages = Number($('home-pages').value) || 8;
+  hi.value = '';
+  state.topic = text;
+  state.pages = pages;
+  await ensureSession();
+  addMessage(text, 'user');
+  $('work-title').textContent = text;
+  $('empty-tip').style.display = '';
+  state.phase = 'outline';   // 立即切到工作视图，展示生成中
+  showView();
+  doOutline(text, pages);
+}
+
+$('home-form').addEventListener('submit', (e) => {
+  e.preventDefault();
+  submitHome();
+});
+$('home-input').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+    e.preventDefault();
+    submitHome();
+  }
+});
+$('home-upload-btn').addEventListener('click', () => $('tpl-upload-input').click());
+$('home-tpl-chip').addEventListener('click', () => {
+  $('home-grid').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+});
+$('new-session-btn').addEventListener('click', newSession);
+
+// ---------- 会话持久化 ----------
+let saveTimer = null;
+
+function sessionPayload() {
+  return {
+    phase: state.phase,
+    topic: state.topic,
+    pages: state.pages,
+    templateId: state.templateId,
+    title: state.outline ? `《${state.outline.title}》` : (state.topic || '新会话'),
+    outline: state.outline,
+    slides: state.slides,
+    canvas: state.canvas,
+    messages: state.messages,
+  };
+}
+
+function scheduleSave() {
+  if (!state.sessionId) return;
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(flushSave, 1000);
+}
+
+async function flushSave() {
+  clearTimeout(saveTimer);
+  saveTimer = null;
+  if (!state.sessionId) return;
+  try {
+    await api(`/api/sessions/${state.sessionId}`, sessionPayload(), 'PUT');
+    loadSessions();
+  } catch { /* 本地工具，保存失败静默重试于下次触发 */ }
+}
+
+async function ensureSession() {
+  if (state.sessionId) return state.sessionId;
+  const resp = await api('/api/sessions', {
+    topic: state.topic, templateId: state.templateId, pages: state.pages,
   });
+  const { id } = await resp.json();
+  state.sessionId = id;
+  loadSessions();
+  return id;
+}
+
+async function loadSessions() {
+  try {
+    const resp = await api('/api/sessions', undefined, 'GET');
+    state.sessions = (await resp.json()).sessions || [];
+  } catch {
+    state.sessions = [];
+  }
+  renderSessionList();
+}
+
+function relTime(ts) {
+  if (!ts) return '';
+  const diff = Date.now() - ts;
+  const m = Math.floor(diff / 60000);
+  if (m < 1) return '刚刚';
+  if (m < 60) return `${m} 分钟前`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h} 小时前`;
+  const d = Math.floor(h / 24);
+  return `${d} 天前`;
+}
+
+function renderSessionList() {
+  const list = $('session-list');
+  if (!list) return;
+  list.innerHTML = '';
+  const empty = $('session-empty');
+  if (empty) empty.style.display = state.sessions.length ? 'none' : '';
+  for (const s of state.sessions) {
+    const item = document.createElement('div');
+    item.className = `session-item${s.id === state.sessionId ? ' active' : ''}`;
+    item.innerHTML = `
+      <span class="session-item-icon"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></span>
+      <span class="session-item-main">
+        <span class="session-item-title">${esc(s.title || '新会话')}</span>
+        <span class="session-item-sub">${s.pageCount ? s.pageCount + ' 页 · ' : ''}${relTime(s.updatedAt)}</span>
+      </span>
+      <button class="session-del" title="删除会话"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>`;
+    item.addEventListener('click', () => loadSession(s.id));
+    item.querySelector('.session-del').addEventListener('click', (e) => {
+      e.stopPropagation();
+      deleteSession(s.id);
+    });
+    list.appendChild(item);
+  }
+}
+
+function newSession() {
+  if (state.busy) return;
+  flushSave();
+  Object.assign(state, {
+    outline: null, slides: [], phase: 'idle', topic: '', pages: 8,
+    canvas: null, messages: [], sessionId: null,
+  });
+  messagesEl.innerHTML = '';
+  slidesEl.innerHTML = '';
+  $('outline-box').classList.add('hidden', 'collapsed');
+  $('empty-tip').style.display = '';
+  $('export-btn').disabled = true;
+  $('progress-bar').classList.add('hidden');
+  $('work-title').textContent = '';
+  $('home-input').value = '';
+  renderTemplateChip();
+  renderSessionList();
+  showView();
+  $('home-input').focus();
+}
+
+async function loadSession(id) {
+  if (state.busy || id === state.sessionId) return;
+  await flushSave();
+  try {
+    const resp = await api(`/api/sessions/${id}`, undefined, 'GET');
+    const s = await resp.json();
+    Object.assign(state, {
+      sessionId: id,
+      phase: s.phase || 'idle',
+      topic: s.topic || '',
+      pages: s.pages || 8,
+      templateId: s.templateId || state.templateId,
+      outline: s.outline || null,
+      slides: Array.isArray(s.slides) ? s.slides : [],
+      canvas: s.canvas || null,
+      messages: Array.isArray(s.messages) ? s.messages : [],
+    });
+    if (s.templateId) localStorage.setItem('king-ppt.template', s.templateId);
+    messagesEl.innerHTML = '';
+    renderMessages();
+    slidesEl.innerHTML = '';
+    state.slides.forEach((sl) => sl && renderSlide(sl));
+    if (state.outline) renderOutline(state.outline);
+    else $('outline-box').classList.add('hidden');
+    const hasSlides = state.slides.filter(Boolean).length > 0;
+    if (state.phase === 'slides') {
+      $('outline-box').classList.add('collapsed');
+      $('export-btn').disabled = !hasSlides;
+      $('empty-tip').style.display = 'none';
+    } else {
+      $('export-btn').disabled = true;
+      $('empty-tip').style.display = hasSlides ? 'none' : '';
+    }
+    $('work-title').textContent = state.outline ? `《${state.outline.title}》` : state.topic;
+    renderTemplateChip();
+    renderSessionList();
+    showView();
+  } catch (err) {
+    toast(`会话加载失败：${err.message}`, 'error');
+  }
+}
+
+async function deleteSession(id) {
+  try {
+    await api(`/api/sessions/${id}`, undefined, 'DELETE');
+  } catch { /* 忽略 */ }
+  if (id === state.sessionId) {
+    newSession();
+  } else {
+    loadSessions();
+  }
+}
+
+window.addEventListener('beforeunload', () => {
+  if (!state.sessionId || !saveTimer) return;
+  try {
+    fetch(`/api/sessions/${state.sessionId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(sessionPayload()),
+      keepalive: true, // 允许请求在页面卸载后继续
+    });
+  } catch { /* 尽力而为 */ }
 });
 
 $('gen-slides-btn').addEventListener('click', doSlides);
@@ -658,6 +996,7 @@ $('export-btn').addEventListener('click', async () => {
 const settingsDialog = $('settings-dialog');
 $('settings-btn').addEventListener('click', openSettings);
 $('model-chip').addEventListener('click', openSettings);
+$('home-model-chip').addEventListener('click', openSettings);
 $('settings-close').addEventListener('click', () => settingsDialog.close());
 
 const SETTINGS_NAV = [
@@ -1603,11 +1942,17 @@ async function refreshModelChip() {
     const resp = await fetch('/api/providers');
     const data = await resp.json();
     const a = data.active.chat;
-    $('chip-dot').className = `chip-dot${a ? ' ok' : ''}`;
-    $('model-info').textContent = a ? `${a.instanceName} · ${a.model}` : '未配置模型';
+    document.querySelectorAll('.model-chip').forEach((chip) => {
+      const dot = chip.querySelector('.chip-dot');
+      const info = chip.querySelector('.model-info');
+      if (dot) dot.className = `chip-dot${a ? ' ok' : ''}`;
+      if (info) info.textContent = a ? `${a.instanceName} · ${a.model}` : '未配置模型';
+    });
   } catch {
-    $('model-info').textContent = '配置加载失败';
+    document.querySelectorAll('.model-chip .model-info').forEach((el) => { el.textContent = '配置加载失败'; });
   }
 }
 refreshModelChip();
 loadTemplates();
+loadSessions();
+showView();

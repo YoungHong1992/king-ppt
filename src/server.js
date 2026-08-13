@@ -8,6 +8,7 @@ const llmprovider = require('./llmprovider');
 const { loadDescriptor, listDescriptors } = require('./descriptor');
 const { resolve } = require('./layout-resolver');
 const { extractFromPptx, saveTemplate } = require('./extract');
+const sessions = require('./sessions');
 
 const app = express();
 app.use(express.json({ limit: '2mb' }));
@@ -15,7 +16,8 @@ app.use(express.static(path.join(__dirname, '..', 'public')));
 
 function statusOf(err) {
   if (err.code === 'NO_API_KEY') return 401;
-  if (err.code === 'NO_MODEL_CONFIG' || err.code === 'CAPABILITY_NOT_SUPPORTED') return 400;
+  if (err.code === 'SESSION_NOT_FOUND') return 404;
+  if (err.code === 'BAD_SESSION_ID' || err.code === 'NO_MODEL_CONFIG' || err.code === 'CAPABILITY_NOT_SUPPORTED') return 400;
   return 500;
 }
 
@@ -150,6 +152,29 @@ app.post('/api/templates', wrap(async (req, res) => {
     return res.status(400).json({ error: '参数不完整' });
   }
   res.json({ id: saveTemplate(stagingId, name), templates: listDescriptors() });
+}));
+
+// ---------- 会话 ----------
+app.get('/api/sessions', (req, res) => {
+  res.json({ sessions: sessions.listSessions() });
+});
+
+app.post('/api/sessions', wrap(async (req, res) => {
+  const session = sessions.createSession(req.body || {});
+  res.json({ id: session.id, session });
+}));
+
+app.get('/api/sessions/:id', wrap(async (req, res) => {
+  res.json(sessions.getSession(req.params.id));
+}));
+
+app.put('/api/sessions/:id', wrap(async (req, res) => {
+  res.json({ session: sessions.updateSession(req.params.id, req.body || {}) });
+}));
+
+app.delete('/api/sessions/:id', wrap(async (req, res) => {
+  sessions.deleteSession(req.params.id);
+  res.json({ ok: true });
 }));
 
 app.post('/api/outline', wrap(async (req, res) => {
