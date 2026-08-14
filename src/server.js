@@ -1,4 +1,5 @@
 const path = require('path');
+const fs = require('fs');
 const express = require('express');
 const { generateOutline, generateSlide, reviseSlides, buildFreeStyle } = require('./agent');
 const htmlShot = require('./html-shot');
@@ -8,10 +9,17 @@ const llmprovider = require('./llmprovider');
 const { loadDescriptor, listDescriptors } = require('./descriptor');
 const { resolve } = require('./layout-resolver');
 const { extractFromPptx, saveTemplate } = require('./extract');
+const { parseSourcePages } = require('./pptx-pages');
 const sessions = require('./sessions');
 
 const app = express();
-app.use(express.json({ limit: '2mb' }));
+// 上传模板以 base64 进 JSON（extract 上限 20MB → base64 约 27MB），单独放宽；其余路由维持 2mb
+const jsonBody = express.json({ limit: '2mb' });
+const jsonBodyLarge = express.json({ limit: '30mb' });
+app.use((req, res, next) => {
+  if (req.path === '/api/templates/extract') return jsonBodyLarge(req, res, next);
+  jsonBody(req, res, next);
+});
 app.use(express.static(path.join(__dirname, '..', 'public')));
 
 function statusOf(err) {
@@ -132,11 +140,60 @@ app.get('/api/templates/:id/assets/:file', wrap(async (req, res) => {
   }
   const d = loadDescriptor(id);
   const full = path.join(d._dir, 'assets', file);
-  const fs = require('fs');
   if (!full.startsWith(path.join(d._dir, 'assets')) || !fs.existsSync(full)) {
     return res.status(404).json({ error: '资源不存在' });
   }
   res.sendFile(full);
+}));
+
+// 模板整册预览：上传模板解析 source.pptx 还原「原件每一页」；预设模板渲染 8 类版式效果页
+const tplPreviewCache = new Map(); // id -> { mtime, data }
+app.get('/api/templates/:id/preview', wrap(async (req, res) => {
+  const { id } = req.params;
+  if (!/^[a-zA-Z0-9_-]+$/.test(id)) return res.status(400).json({ error: '非法的模板 id' });
+  const d = loadDescriptor(id);
+  const sourcePath = path.join(d._dir, 'source.pptx');
+  if (fs.existsSync(sourcePath)) {
+    const mtime = fs.statSync(sourcePath).mtimeMs;
+    let hit = tplPreviewCache.get(id);
+    if (!hit || hit.mtime !== mtime) {
+      hit = { mtime, data: await parseSourcePages(fs.readFileSync(sourcePath), { mediaDir: path.join(d._dir, '.media') }) };
+      tplPreviewCache.set(id, hit);
+      if (tplPreviewCache.size > 8) tplPreviewCache.delete(tplPreviewCache.keys().next().value);
+    }
+    return res.json({ kind: 'source', name: d.meta.name, canvas: hit.data.canvas, pages: hit.data.pages });
+  }
+  const samples = [
+    { index: 0, type: 'title', title: '演示文稿标题', subtitle: '副标题示例文字' },
+    { index: 1, type: 'section', title: '第一章节名', subtitle: '章节导语示例' },
+    { index: 2, type: 'bullets', title: '要点页标题', bullets: ['第一条要点内容', '第二条要点内容', '第三条要点内容'] },
+    { index: 3, type: 'twoColumn', title: '两栏对比标题', leftTitle: '传统方式', leftBullets: ['人工排版耗时长', '多人协作版式乱'], rightTitle: '智能生成', rightBullets: ['十分钟出初稿', '版式自动统一'] },
+    { index: 4, type: 'table', title: '数据表格标题', headers: ['指标', '本季度', '环比'], rows: [['产出效率', '92%', '+18%'], ['版式一致性', '100%', '+7%']] },
+    { index: 5, type: 'steps', title: '流程步骤标题', steps: [{ title: '输入主题', desc: '可粘贴参考材料' }, { title: '确认大纲', desc: '逐页流式生成' }, { title: '导出编辑', desc: '下载可编辑 PPTX' }] },
+    { index: 6, type: 'quote', quote: '别人熬夜做的，没你十分钟做的好。', author: '卷王PPT' },
+    { index: 7, type: 'stats', title: '关键数字', stats: [{ value: '87%', label: '效率提升' }, { value: '10分钟', label: '平均出稿' }] },
+  ];
+  res.json({
+    kind: 'descriptor',
+    name: d.meta.name,
+    canvas: d.canvas,
+    types: samples.map((s) => s.type),
+    scenes: resolve(d, samples, { title: d.meta.name }).slides,
+  });
+}));
+
+// 原件预览引用的媒体（首次 preview 时解包到模板目录 .media/ 缓存）
+app.get('/api/templates/:id/media/:file', wrap(async (req, res) => {
+  const { id, file } = req.params;
+  if (!/^[a-zA-Z0-9_-]+$/.test(id) || file !== path.basename(file)) {
+    return res.status(400).json({ error: '非法的资源路径' });
+  }
+  const d = loadDescriptor(id);
+  const full = path.join(d._dir, '.media', file);
+  if (!full.startsWith(path.join(d._dir, '.media')) || !fs.existsSync(full)) {
+    return res.status(404).json({ error: '资源不存在' });
+  }
+  res.sendFile(full, { dotfiles: 'allow' }); // .media 是点目录，send 默认忽略
 }));
 
 app.post('/api/templates/extract', wrap(async (req, res) => {
@@ -255,6 +312,19 @@ app.post('/api/export', wrap(async (req, res) => {
   res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${filename}`);
   res.send(Buffer.from(buf));
 }));
+
+// body-parser 等中间件抛出的错误兜底：返回 JSON，避免默认 HTML 错误页让前端只能显示状态码
+app.use((err, req, res, next) => {
+  const status = err.status || err.statusCode || 500;
+  if (status === 413) {
+    const hint = req.path === '/api/templates/extract' ? '模板文件需小于 20MB' : '请求体过大';
+    return res.status(413).json({ error: hint });
+  }
+  if (err.type === 'entity.parse.failed') {
+    return res.status(400).json({ error: '请求体不是合法 JSON' });
+  }
+  res.status(status).json({ error: err.message || '服务器内部错误' });
+});
 
 function start(port = Number(process.env.PORT) || 3210) {
   return new Promise((resolve) => {

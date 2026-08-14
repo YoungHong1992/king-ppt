@@ -1517,3 +1517,82 @@ dialog::backdrop { background: rgba(15, 18, 30, 0.45); backdrop-filter: blur(3px
   background: var(--surface);
 }
 .tpl-name-input:focus { outline: none; border-color: var(--brand-1); }
+
+/* ================= 模板整册预览 ================= */
+/* 卡片悬浮「预览」按钮 */
+.tpl-preview-btn {
+  position: absolute; right: 8px; bottom: 8px; z-index: 3;
+  padding: 4px 12px; font-size: 12px; line-height: 1.4;
+  border: none; border-radius: 6px; cursor: pointer;
+  background: rgba(15, 23, 42, 0.82); color: #fff;
+  opacity: 0; transition: opacity 0.15s var(--ease), background 0.15s var(--ease);
+}
+.home-card:hover .tpl-preview-btn,
+.home-card:focus-within .tpl-preview-btn,
+.tpl-card:hover .tpl-preview-btn,
+.tpl-card:focus-within .tpl-preview-btn { opacity: 1; }
+.tpl-preview-btn:hover { background: var(--brand-1); }
+
+/* 整册预览弹窗 */
+.tpl-preview-overlay {
+  position: fixed; inset: 0; z-index: 110;
+  background: rgba(15, 23, 42, 0.62);
+  display: flex; align-items: center; justify-content: center;
+  animation: tplPreviewIn 0.16s var(--ease);
+}
+@keyframes tplPreviewIn { from { opacity: 0; } }
+.tpl-preview-panel {
+  width: min(980px, 94vw); max-height: 92vh;
+  display: flex; flex-direction: column;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 14px;
+  box-shadow: var(--shadow-lg); overflow: hidden;
+}
+.tpl-preview-head {
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px 16px; border-bottom: 1px solid var(--border);
+}
+.tpl-preview-name { font-size: 15px; font-weight: 700; }
+.tpl-preview-kind {
+  font-size: 11px; color: var(--muted);
+  background: var(--surface-2); border-radius: 10px; padding: 2px 8px;
+}
+.tpl-preview-close {
+  margin-left: auto; width: 28px; height: 28px;
+  border: none; background: transparent; border-radius: 6px;
+  font-size: 14px; color: var(--muted); cursor: pointer;
+}
+.tpl-preview-close:hover { background: var(--surface-2); color: var(--text); }
+.tpl-preview-stage {
+  height: min(64vh, 620px);
+  display: flex; align-items: center; justify-content: center;
+  padding: 16px; background: var(--surface-2);
+}
+.tpl-preview-stage .slide {
+  width: auto; height: 100%; max-width: 100%;
+  border-radius: 8px;
+}
+.tpl-preview-foot {
+  display: flex; align-items: center; justify-content: center; gap: 14px;
+  padding: 10px 16px 14px; border-top: 1px solid var(--border);
+}
+.tpl-preview-nav {
+  padding: 6px 14px; font-size: 13px;
+  border: 1px solid var(--border); border-radius: 8px;
+  background: var(--surface); cursor: pointer;
+}
+.tpl-preview-nav:hover:not(:disabled) { border-color: var(--brand-1); color: var(--brand-1); }
+.tpl-preview-nav:disabled { opacity: 0.35; cursor: default; }
+.tpl-preview-page { font-size: 13px; color: var(--muted); min-width: 140px; text-align: center; }
+
+/* source 原件页渲染元素 */
+.slide.sp-source { padding: 0; }
+.sp-img { position: absolute; object-fit: fill; }
+.sp-shape { position: absolute; box-sizing: border-box; }
+.sp-texts {
+  position: absolute; inset: 0;
+  display: flex; flex-direction: column; gap: 0.12em;
+  padding: 0.08em 0.14em; overflow: hidden;
+}
+.sp-texts[data-anchor="ctr"] { justify-content: center; }
+.sp-texts[data-anchor="b"] { justify-content: flex-end; }
+.sp-para { width: 100%; line-height: 1.22; overflow-wrap: break-word; }

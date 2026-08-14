@@ -475,7 +475,8 @@ function buildHomeCard(tpl) {
       <span class="home-card-tag ${tpl.source === 'uploaded' ? 'uploaded' : ''}">${tpl.source === 'uploaded' ? '上传' : '预设'}</span>
     </div>`;
   card.addEventListener('click', () => selectTemplate(tpl.id));
-  paintThumb(tpl.id, card.querySelector('.home-card-thumb'));
+  // paintThumb 成功/失败都会重建缩略图内容，按钮须在其之后再挂
+  paintThumb(tpl.id, card.querySelector('.home-card-thumb')).finally(() => attachPreviewBtn(card, tpl.id));
   return card;
 }
 
@@ -525,7 +526,7 @@ function buildTplCard(tpl) {
       <span class="tpl-source ${tpl.source === 'uploaded' ? 'uploaded' : ''}">${tpl.source === 'uploaded' ? '上传' : '预设'}</span>
     </div>`;
   card.addEventListener('click', () => selectTemplate(tpl.id));
-  paintThumb(tpl.id, card.querySelector('.tpl-thumb'));
+  paintThumb(tpl.id, card.querySelector('.tpl-thumb')).finally(() => attachPreviewBtn(card, tpl.id));
   return card;
 }
 
@@ -564,6 +565,198 @@ async function paintThumb(id, thumbEl) {
   } catch {
     thumbEl.innerHTML = '<div class="muted" style="font-size:11px;display:flex;height:100%;align-items:center;justify-content:center">预览失败</div>';
   }
+}
+
+// ---------- 模板整册预览 ----------
+const tplPreviewCache = new Map();
+const TYPE_LABELS = {
+  title: '封面', section: '章节页', bullets: '要点页', twoColumn: '两栏对比',
+  table: '数据表格', steps: '流程步骤', quote: '金句页', stats: '关键数字',
+};
+
+async function fetchTplPreview(id) {
+  if (!tplPreviewCache.has(id)) {
+    const resp = await api(`/api/templates/${encodeURIComponent(id)}/preview`, undefined, 'GET');
+    tplPreviewCache.set(id, await resp.json());
+  }
+  return tplPreviewCache.get(id);
+}
+
+// 卡片缩略图右下角的悬浮「预览」按钮
+function attachPreviewBtn(card, id) {
+  const thumb = card.querySelector('.home-card-thumb, .tpl-thumb');
+  if (!thumb) return;
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'tpl-preview-btn';
+  btn.textContent = '预览';
+  btn.addEventListener('click', (e) => { e.stopPropagation(); openTplPreview(id); });
+  thumb.appendChild(btn);
+}
+
+// source.pptx 原件页 → DOM（与 DomPainter 同样的单位换算：英寸→百分比，pt→cqh）
+function paintSourcePage(page, canvas, templateId) {
+  const W = canvas.width;
+  const H = canvas.height;
+  const el = document.createElement('div');
+  el.className = 'slide sp-source';
+  el.style.aspectRatio = `${W} / ${H}`;
+  const xPct = (v) => `${(v / W) * 100}%`;
+  const yPct = (v) => `${(v / H) * 100}%`;
+  const ptCqh = (pt) => `${((pt / 72) / H) * 100}cqh`;
+  const rgba = (hex, transparency) => {
+    if (!hex) return null;
+    const h = String(hex).replace('#', '');
+    if (h.length !== 6) return null;
+    if (!transparency) return `#${h}`;
+    const a = Math.max(0, Math.min(1, 1 - transparency / 100));
+    return `rgba(${parseInt(h.slice(0, 2), 16)}, ${parseInt(h.slice(2, 4), 16)}, ${parseInt(h.slice(4, 6), 16)}, ${a})`;
+  };
+  const mediaUrl = (name) => `/api/templates/${encodeURIComponent(templateId)}/media/${encodeURIComponent(name)}`;
+  const fillCss = (fill) => {
+    if (!fill || fill.none) return '';
+    if (fill.gradient) {
+      const dir = fill.gradient.direction === 'vertical' ? 'to bottom' : 'to right';
+      const stops = fill.gradient.stops
+        .map((s) => `${rgba(s.color, s.transparency) || '#000'} ${Math.round(s.pos * 100)}%`)
+        .join(', ');
+      return `background:linear-gradient(${dir}, ${stops});`;
+    }
+    const c = rgba(fill.color, fill.transparency);
+    return c ? `background:${c};` : '';
+  };
+  const SHAPE_CSS = {
+    ellipse: 'border-radius:50%;',
+    roundRect: 'border-radius:1.2cqh;',
+    triangle: 'clip-path:polygon(50% 0,100% 100%,0 100%);',
+    diamond: 'clip-path:polygon(50% 0,100% 50%,50% 100%,0 50%);',
+    parallelogram: 'clip-path:polygon(18% 0,100% 0,82% 100%,0 100%);',
+    chevron: 'clip-path:polygon(0 0,86% 0,100% 50%,86% 100%,0 100%);',
+    hexagon: 'clip-path:polygon(25% 0,75% 0,100% 50%,75% 100%,25% 100%,0 50%);',
+    rightArrow: 'clip-path:polygon(0 25%,68% 25%,68% 0,100% 50%,68% 100%,68% 75%,0 75%);',
+  };
+  // 原件未标注字号时按框高估一档（单行占框高约 7 成，多行按正文字号）
+  const guessSize = (o) => {
+    const hPt = (o.bbox ? o.bbox[3] : 0) * 72;
+    return Math.round((o.texts || []).length <= 1 ? Math.min(60, Math.max(10, hPt * 0.72)) : 16);
+  };
+
+  el.style.background = (page.background && rgba(page.background.color)) || '#fff';
+  let bgHtml = '';
+  if (page.background) {
+    if (page.background.image) {
+      bgHtml = `<img class="sp-img" style="left:0;top:0;width:100%;height:100%" src="${mediaUrl(page.background.image)}" alt="">`;
+    } else if (page.background.gradient) {
+      bgHtml = `<div class="sp-shape" style="left:0;top:0;width:100%;height:100%;${fillCss(page.background)}"></div>`;
+    }
+  }
+  el.innerHTML = bgHtml + (page.objects || []).map((o) => {
+    const [x, y, w, h] = o.bbox;
+    const box = `left:${xPct(x)};top:${yPct(y)};width:${xPct(w)};height:${yPct(h)};`
+      + (o.rot ? `transform:rotate(${o.rot}deg);` : '');
+    if (o.type === 'image') {
+      return `<img class="sp-img" style="${box}" src="${mediaUrl(o.media)}" alt="">`;
+    }
+    if (o.shape === 'line') {
+      const lw = ptCqh((o.line && o.line.width) || 1);
+      const c = rgba(o.line && o.line.color) || '#666';
+      if (h <= 0.05) return `<div class="sp-shape" style="${box}height:${lw};background:${c};"></div>`;
+      if (w <= 0.05) return `<div class="sp-shape" style="${box}width:${lw};background:${c};"></div>`;
+      // 斜线：按对角线长度旋转近似
+      const len = Math.sqrt(w * w + h * h);
+      const ang = Math.round((Math.atan2(h, w) * 180) / Math.PI);
+      return `<div class="sp-shape" style="left:${xPct(x + w / 2)};top:${yPct(y + h / 2)};width:${xPct(len)};height:${lw};background:${c};transform:translate(-50%,-50%) rotate(${ang}deg);"></div>`;
+    }
+    let css = box + fillCss(o.fill);
+    if (o.line && o.line.color) {
+      css += `border:${ptCqh(o.line.width || 1)} solid ${rgba(o.line.color) || '#666'};`;
+    }
+    css += SHAPE_CSS[o.shape] || '';
+    let texts = '';
+    if (o.texts && o.texts.length) {
+      const paras = o.texts.map((p) => {
+        const sizes = p.runs.map((r) => r.size).filter(Boolean);
+        const size = sizes.length ? Math.max(...sizes) : guessSize(o);
+        const spans = p.runs.map((r) => {
+          const style = (r.color && rgba(r.color) ? `color:${rgba(r.color)};` : '')
+            + (r.bold ? 'font-weight:700;' : '')
+            + (r.italic ? 'font-style:italic;' : '')
+            + (r.font ? `font-family:'${esc(r.font)}','Microsoft YaHei',sans-serif;` : '');
+          return style ? `<span style="${style}">${esc(r.text)}</span>` : esc(r.text);
+        }).join('');
+        const align = { l: 'left', ctr: 'center', r: 'right', just: 'justify' }[p.align] || 'left';
+        return `<div class="sp-para" style="font-size:${ptCqh(size)};text-align:${align};">${spans}</div>`;
+      }).join('');
+      texts = `<div class="sp-texts" data-anchor="${o.anchor || 't'}">${paras}</div>`;
+    }
+    return `<div class="sp-shape" style="${css}">${texts}</div>`;
+  }).join('');
+  return el;
+}
+
+async function openTplPreview(id) {
+  let data;
+  try {
+    data = await fetchTplPreview(id);
+  } catch (err) {
+    toast(`模板预览失败：${err.message}`, 'error');
+    return;
+  }
+  const pages = data.kind === 'source' ? data.pages : data.scenes;
+  if (!pages || pages.length === 0) {
+    toast('该模板暂无可预览的页面', 'info');
+    return;
+  }
+  const cur = { page: 0 };
+  const overlay = document.createElement('div');
+  overlay.className = 'tpl-preview-overlay';
+  overlay.innerHTML = `
+    <div class="tpl-preview-panel">
+      <div class="tpl-preview-head">
+        <span class="tpl-preview-name">${esc(data.name || '模板预览')}</span>
+        <span class="tpl-preview-kind">${data.kind === 'source' ? '原件逐页' : '版式效果'}</span>
+        <button class="tpl-preview-close" type="button" title="关闭 (Esc)">✕</button>
+      </div>
+      <div class="tpl-preview-stage"></div>
+      <div class="tpl-preview-foot">
+        <button class="tpl-preview-nav" type="button" data-nav="prev">◀ 上一页</button>
+        <span class="tpl-preview-page"></span>
+        <button class="tpl-preview-nav" type="button" data-nav="next">下一页 ▶</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  const stage = overlay.querySelector('.tpl-preview-stage');
+  const pageEl = overlay.querySelector('.tpl-preview-page');
+  const prevBtn = overlay.querySelector('[data-nav="prev"]');
+  const nextBtn = overlay.querySelector('[data-nav="next"]');
+  const render = () => {
+    stage.innerHTML = '';
+    const el = data.kind === 'source'
+      ? paintSourcePage(pages[cur.page], data.canvas, id)
+      : DomPainter.paintInto(pages[cur.page], id, data.canvas);
+    stage.appendChild(el);
+    const label = data.kind === 'descriptor' && data.types ? ` · ${TYPE_LABELS[data.types[cur.page]] || ''}` : '';
+    pageEl.textContent = `${cur.page + 1} / ${pages.length}${label}`;
+    prevBtn.disabled = cur.page === 0;
+    nextBtn.disabled = cur.page === pages.length - 1;
+  };
+  const prev = () => { if (cur.page > 0) { cur.page -= 1; render(); } };
+  const next = () => { if (cur.page < pages.length - 1) { cur.page += 1; render(); } };
+  const close = () => {
+    document.removeEventListener('keydown', onKey);
+    overlay.remove();
+  };
+  const onKey = (e) => {
+    if (e.key === 'Escape') close();
+    else if (e.key === 'ArrowLeft') prev();
+    else if (e.key === 'ArrowRight') next();
+  };
+  prevBtn.addEventListener('click', prev);
+  nextBtn.addEventListener('click', next);
+  overlay.querySelector('.tpl-preview-close').addEventListener('click', close);
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  document.addEventListener('keydown', onKey);
+  render();
 }
 
 async function selectTemplate(id) {
