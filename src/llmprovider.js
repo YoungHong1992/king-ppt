@@ -60,7 +60,7 @@ const PROVIDER_TEMPLATES = [
     baseURL: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
     models: [],
     keyUrl: 'https://bailian.console.aliyun.com/#/api-key',
-    short: '通', color: '#7c3aed', tagline: '全家桶', tag: '文本/识图/生图',
+    short: '通', color: '#7c3aed', tagline: '全家桶', tag: '文本/识图',
   },
   {
     id: 'doubao', name: '豆包（火山方舟）', adapter: 'openai',
@@ -68,6 +68,14 @@ const PROVIDER_TEMPLATES = [
     models: [],
     keyUrl: 'https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey',
     short: '豆', color: '#3251e6', tagline: '字节出品', tag: '字节出品',
+  },
+  {
+    // 国内站 api.minimaxi.com；国际站为 api.minimax.io，两边 API Key 不通用
+    id: 'minimax', name: 'MiniMax', adapter: 'openai',
+    baseURL: 'https://api.minimaxi.com/v1',
+    models: [],
+    keyUrl: 'https://platform.minimaxi.com/user-center/basic-information/interface-key',
+    short: 'M', color: '#ff3b30', tagline: 'M 系列旗舰', tag: '文本/识图',
   },
   {
     id: 'gemini', name: 'Google Gemini', adapter: 'gemini',
@@ -475,9 +483,10 @@ function toGeminiContents(messages) {
 }
 
 const geminiAdapter = {
-  async chat(ctx, messages, { temperature = 0.7, json = false } = {}) {
+  async chat(ctx, messages, { temperature = 0.7, json = false, maxTokens } = {}) {
     const { system, contents } = toGeminiContents(messages);
     const body = { contents, generationConfig: { temperature } };
+    if (maxTokens) body.generationConfig.maxOutputTokens = maxTokens;
     if (system) body.system_instruction = { parts: [{ text: system }] };
     if (json) body.generationConfig.response_mime_type = 'application/json';
     const url = `${ctx.baseURL}/models/${ctx.model}:generateContent`;
