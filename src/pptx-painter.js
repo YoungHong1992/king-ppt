@@ -7,6 +7,9 @@ function paintShape(slide, o) {
   if (o.fill) opts.fill = { color: o.fill, transparency: o.transparency || 0 };
   if (o.line) opts.line = o.line;
   if (o.rectRadius !== undefined) opts.rectRadius = o.rectRadius;
+  if (o.flipH) opts.flipH = true;
+  if (o.flipV) opts.flipV = true;
+  if (o.rotate) opts.rotate = o.rotate;
   slide.addShape(o.shape, opts);
 }
 

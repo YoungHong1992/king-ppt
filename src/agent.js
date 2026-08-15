@@ -13,12 +13,13 @@ const SLIDE_TYPES = `
 - "steps"     流程步骤页，字段: { title, steps: [{ title, desc }] }（3~5 步，title 不超过 10 字，desc 不超过 30 字）
 - "quote"     金句页，字段: { quote, author? }（一句有冲击力的引文，不超过 50 字）
 - "stats"     关键数字页，字段: { title, stats: [{ value, label }] }（2~4 个数字，value 要醒目如 "87%"，label 不超过 12 字）
-- "free"      自由排版页，字段: { title, html }（用 HTML/CSS 自由设计整页；每份演示主动安排 1~3 页，用于最值得视觉表现的页面，避免整套版式单调）
+- "free"      自由排版页，字段: { title, svg }（用 SVG 自由设计整页；每份演示主动安排 1~3 页，用于最值得视觉表现的页面，避免整套版式单调）
 
 可选增强字段（有则输出，无则省略）：
 - "eyebrow"    封面/章节页的眉题（不超过 12 字，如 "AI 提效 · 实践"）
 - "conclusion" 内容页底部总结条的主结论（一句话，不超过 40 字）；搭配可选 "note"（补充说明，不超过 40 字）
 - "author"     封面署名（如姓名/团队）
+- "imagePrompt" 配图意图（仅 bullets 要点页可选）：一句话描述本页配图画面，英文短语更佳（如 "minimal illustration of a rocket launching, flat style"）；适合配图的页才输出，无把握不要输出
 
 选型指引：有结构化数据/多维对比用 "table"；内容有先后顺序用 "steps"；需要强调一句话用 "quote"；有亮眼数字用 "stats"；核心卖点、重磅数字、创意展示等重点页优先用 "free" 制造视觉亮点（每份 1~3 页）；其余叙述性内容用 "bullets" 或 "twoColumn"。
 `.trim();
@@ -91,15 +92,15 @@ function buildFreeStyle(d) {
 function freeStyleText(fs) {
   const colorLines = Object.entries(fs.colors || {}).map(([role, hex]) => `${role} ${hex}`).join('；');
   return `
-自由排版页（type: "free"）的 html 字段规范：
-- 输出完整 HTML 片段：单个根 <div>，固定 ${fs.canvas.width}×${fs.canvas.height} px 画布（宽高写死，overflow:hidden，内部元素用 px 绝对定位或 flex/grid 布局）
-- 只能使用以下模板配色（允许加透明度）：${colorLines || '由你选取协调的商务配色'}
-- 字体仅限：${fs.fontStack}；不要声明其他 font-family
-- 禁止：<script>、<iframe>、<link>、任何外部资源（图片/字体/CDN/URL/@import）、position:fixed、CSS 动画与 transition
-- 布局自检：任何装饰元素（色块/圆形/线条）不得遮挡文字；文字必须完整可读，四周留至少 40px 安全边距
-- 鼓励：CSS 渐变、几何色块装饰、圆角卡片、大字号数字、emoji 图标、精致的留白与对齐
-- 设计基调：${fs.tone}
-- 所有样式内联在元素 style 上或放在片段开头的一个 <style> 块内，不要引用外部样式表`.trimStart();
+自由排版页（type: "free"）的 svg 字段规范：
+- 输出一个完整的 SVG 字符串：根元素 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720">，只输出 SVG 本身（字符串内的引号用 \\" 转义）
+- 只允许这些元素：<rect> <circle> <ellipse> <line> <text> <g>（分组仅用于 transform="translate(x,y)"）
+- 只能使用以下模板配色（可加 fill-opacity / stroke-opacity 做层次）：${colorLines || '由你选取协调的商务配色'}
+- <text> 必须带 x、y、font-size、fill 属性；对齐用 text-anchor="start|middle|end"；换行 = 多个 <text> 元素；不要用 <tspan>
+- 禁止：<script>、事件属性、任何外部资源（href/图片/字体）、<defs>、渐变、滤镜、mask、clip-path、CSS 动画
+- 布局自检：装饰色块不得遮挡文字（文字元素放在最后）；文字距画布边缘至少 40px；字号不小于 16
+- 鼓励：大小色块对比、圆形/线条几何装饰、fill-opacity 半透明叠层、超大号数字、精致的留白与对齐
+- 设计基调：${fs.tone}`.trimStart();
 }
 
 // ---------- 单页自愈：类型纠正 + 重试 + 兜底 ----------
@@ -145,7 +146,7 @@ function enforcePosition(slide, index, total) {
 
 // 把 LLM 输出清洗成可渲染的幻灯片；无法挽救时返回 null（触发重试）
 const KNOWN_KEYS = ['type', 'slideType', 'slide_type', 'layout', 'title', 'subtitle', 'bullets',
-  'steps', 'stats', 'rows', 'headers', 'leftBullets', 'rightBullets', 'quote', 'conclusion', 'html'];
+  'steps', 'stats', 'rows', 'headers', 'leftBullets', 'rightBullets', 'quote', 'conclusion', 'html', 'svg', 'imagePrompt'];
 function sanitizeSlide(parsed, index, total, page) {
   let s = parsed;
   if (Array.isArray(s)) s = s[0]; // 模型偶尔把单页包成数组
@@ -155,10 +156,12 @@ function sanitizeSlide(parsed, index, total, page) {
   if (!KNOWN_KEYS.some((k) => s[k] !== undefined)) return null;
   // type 字段的常见别名键
   s.type = s.type ?? s.slideType ?? s.slide_type ?? s.layout;
-  // free 自由排版页：html 为必备载荷，缺失交给重试/兜底，不做类型推断
+  // free 自由排版页：svg（新）/ html（旧会话兼容）必须有一个，缺失交给重试/兜底
   if (coerceType(s.type) === 'free') {
-    if (typeof s.html !== 'string' || !s.html.includes('<')) return null;
-    return enforcePosition({ ...s, type: 'free' }, index, total);
+    const svgOk = typeof s.svg === 'string' && s.svg.includes('<');
+    const htmlOk = typeof s.html === 'string' && s.html.includes('<');
+    if (!svgOk && !htmlOk) return null;
+    return enforcePosition({ ...s, type: 'free', html: htmlOk ? s.html : undefined }, index, total);
   }
   s.type = coerceType(s.type) || inferType(s);
   if (!s.title && page && page.heading) s.title = page.heading;
@@ -181,7 +184,8 @@ function fallbackSlide(index, total, page) {
 }
 
 // ---------- 单页幻灯片 ----------
-async function generateSlide({ outline, index, constraints, freeStyle }) {
+// feedback：上一版的质量问题反馈（首页门禁 / 单页重生成用），会作为修正要求注入
+async function generateSlide({ outline, index, constraints, freeStyle, feedback }) {
   const page = outline.pages[index];
   const total = outline.pages.length;
   // harness 指定重点展示页（5 页以上的 deck，内容页正中一页），硬性引导 free
@@ -204,7 +208,7 @@ ${SLIDE_TYPES}
       content: `演示文稿总标题：${outline.title}
 当前是第 ${index + 1}/${total} 页（index=${index}）
 本页标题：${page.heading}
-本页意图：${page.intent}${suggestFree ? '\n本页是全篇的重点展示页，请使用 "free" 自由排版，按上方 HTML 规范输出有设计感的页面。' : ''}`,
+本页意图：${page.intent}${suggestFree ? '\n本页是全篇的重点展示页，请使用 "free" 自由排版，按上方 SVG 规范输出有设计感的页面。' : ''}${feedback ? `\n\n上一版存在以下质量问题，请修正后重新输出：\n${feedback}` : ''}`,
     },
   ];
   // 自愈主循环：清洗成功即返回；失败把原因反馈给模型重试（最多 3 次）
@@ -261,6 +265,12 @@ ${SLIDE_TYPES}
     const cleaned = s && typeof s === 'object' ? sanitizeSlide(s, idx, arr.length, null) : null;
     const usable = cleaned || slides[idx] || slides[i];
     if (!usable) throw new Error(`第 ${idx + 1} 页修改结果损坏且无原页可回退`);
+    // LLM 重写会丢掉本地扩展字段：版式选择与已生成配图从原页继承
+    const prev = slides[idx] || slides[i];
+    if (prev) {
+      if (prev._variant !== undefined && usable._variant === undefined) usable._variant = prev._variant;
+      if (prev.image && !usable.image && usable.type !== 'free') usable.image = prev.image;
+    }
     return validateSlide(usable, idx);
   });
 }

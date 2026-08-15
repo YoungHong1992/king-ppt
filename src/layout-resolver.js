@@ -90,6 +90,8 @@ function resolveSlots(d, variant, slide, ctx, objects) {
     const value = slotValue({ name, ...slot }, slide, ctx);
     if (value === undefined || value === '') continue;
     const [x, y, w, h] = slot.rect;
+    // _edit：字段来自 slide[name] 的槽位可就地编辑（固定文案/页码槽不标）
+    const editable = !slot.fromIndex && slot.text === undefined && slide[name] !== undefined;
     objects.push({
       kind: 'text', x, y, w, h, text: String(value),
       fontSize: sizeOf(d, slot.size),
@@ -98,6 +100,7 @@ function resolveSlots(d, variant, slide, ctx, objects) {
       fontFace: fontOf(d, slot.font),
       align: slot.align, valign: slot.valign,
       charSpacing: slot.letterSpacing,
+      ...(editable ? { _edit: { field: name, prefix: slot.prefix || '' } } : {}),
     });
   }
 }
@@ -112,6 +115,7 @@ const CHROME = {
       kind: 'text', x, y, w, h, text: String(ctx.slide.title),
       fontSize: sizeOf(d, p.slot.size), bold: Boolean(p.slot.bold),
       color: pal(d, p.slot.color), fontFace: fontOf(d, 'title'),
+      _edit: { field: 'title' },
     });
     for (const dec of p.decorations || []) {
       objects.push(...resolveDecoration(d, dec.use, dec.at));
@@ -130,6 +134,7 @@ const CHROME = {
       kind: 'text', x, y, w, h, text: String(ctx.slide.title),
       fontSize: sizeOf(d, p.slot.size), bold: Boolean(p.slot.bold),
       color: pal(d, p.slot.color), fontFace: fontOf(d, 'title'),
+      _edit: { field: 'title' },
     });
   },
 
@@ -151,6 +156,7 @@ const CHROME = {
         kind: 'text', x: sx, y: sy, w: sw, h: sh, text: String(raw),
         fontSize: sizeOf(d, slot.size), bold: Boolean(slot.bold),
         color: pal(d, slot.color), fontFace: fontOf(d), valign: 'middle',
+        _edit: { field: name },
       });
     }
   },
@@ -176,15 +182,19 @@ const CHROME = {
 };
 
 // ---------- 主体组件（按内容类型）----------
+// bullets 对象的 _edit.field 指向 slide 上的数组字段（bullets/leftBullets/rightBullets），
+// 前端按条目下标逐条就地编辑
 function bulletsObject(x, y, w, h, items, opts) {
-  return { kind: 'bullets', x, y, w, h, items: (items || []).map(String), ...opts };
+  const { _edit, ...rest } = opts;
+  return { kind: 'bullets', x, y, w, h, items: (items || []).map(String), ...rest, ...(_edit ? { _edit } : {}) };
 }
 
 const BODY = {
   bullets(d, ctx, objects) {
     const p = d.components.cardList;
-    const [x, y, w, h] = p.rect;
-    if (p.card) {
+    // 图片版式等变体可用 variant.bodyRect 收窄主体区域
+    const [x, y, w, h] = ctx.bodyRect || p.rect;
+    if (!ctx.bodyRect && p.card) {
       objects.push({
         kind: 'shape', shape: 'roundRect', x: p.card.rect[0], y: p.card.rect[1], w: p.card.rect[2], h: p.card.rect[3],
         fill: pal(d, p.card.fill), rectRadius: p.card.radius,
@@ -194,6 +204,7 @@ const BODY = {
     objects.push(bulletsObject(x, y, w, h, ctx.slide.bullets, {
       fontSize: sizeOf(d, p.size), color: pal(d, p.color),
       bulletColor: pal(d, p.bulletColor), paraSpaceAfter: p.paraSpaceAfter, fontFace: fontOf(d),
+      _edit: { field: 'bullets' },
     }));
   },
 
@@ -201,8 +212,8 @@ const BODY = {
     const p = d.components.cardPair;
     const s = ctx.slide;
     const cols = [
-      { title: s.leftTitle, bullets: s.leftBullets },
-      { title: s.rightTitle, bullets: s.rightBullets },
+      { title: s.leftTitle, bullets: s.leftBullets, field: 'left' },
+      { title: s.rightTitle, bullets: s.rightBullets, field: 'right' },
     ];
     cols.forEach((c, i) => {
       const x = p.columns.xs[i];
@@ -227,10 +238,12 @@ const BODY = {
         kind: 'text', x, y: p.columns.tagY, w, h: p.columns.tagH, text: String(c.title || ''),
         fontSize: sizeOf(d, p.tag.size), bold: Boolean(p.tag.bold), color: pal(d, p.tag.color),
         align: p.tag.align, valign: 'middle', fontFace: fontOf(d),
+        _edit: { field: `${c.field}Title` },
       });
       objects.push(bulletsObject(x + p.columns.bodyPadX, p.columns.bodyY, w - p.columns.bodyPadX * 2, p.columns.bodyH, c.bullets, {
         fontSize: sizeOf(d, p.body.size), color: pal(d, p.body.color),
         bulletColor: pal(d, p.body.bulletColor), paraSpaceAfter: p.body.paraSpaceAfter, fontFace: fontOf(d),
+        _edit: { field: `${c.field}Bullets` },
       }));
     });
   },
@@ -241,13 +254,14 @@ const BODY = {
     const headers = (s.headers || []).map(String);
     if (headers.length === 0) return;
     const rows = (s.rows || []).map((r) => (Array.isArray(r) ? r : [r]).map(String));
-    const [x, y, w] = p.rect;
+    const [x, y, w] = ctx.bodyRect || p.rect;
     objects.push({
       kind: 'table', x, y, w, headers, rows, rowH: p.rowH,
       header: { fill: pal(d, p.header.fill), color: pal(d, p.header.color), fontSize: sizeOf(d, p.header.size), bold: Boolean(p.header.bold), align: p.header.align },
       cell: { color: pal(d, p.cell.color), fontSize: sizeOf(d, p.cell.size), zebra: pal(d, p.cell.zebra), plain: pal(d, p.cell.plain || 'bg') },
       border: { color: pal(d, (p.cell.border || {}).color), pt: (p.cell.border || {}).pt || 1 },
       fontFace: fontOf(d),
+      _edit: { field: 'table' },
     });
   },
 
@@ -255,7 +269,9 @@ const BODY = {
     const p = d.components.flowChain;
     const steps = (ctx.slide.steps || []).slice(0, p.maxItems || 5);
     if (steps.length === 0) return;
-    const a = p.area;
+    const a = ctx.bodyRect
+      ? { x: ctx.bodyRect[0], y: ctx.bodyRect[1], w: ctx.bodyRect[2], h: ctx.bodyRect[3], gap: p.area.gap }
+      : p.area;
     const w = (a.w - a.gap * (steps.length - 1)) / steps.length;
     steps.forEach((st, i) => {
       const x = a.x + i * (w + a.gap);
@@ -275,11 +291,13 @@ const BODY = {
         kind: 'text', x: x + 0.15, y: a.y + p.title.offsetY, w: w - 0.3, h: p.title.h, text: String(st.title || ''),
         fontSize: sizeOf(d, p.title.size), bold: Boolean(p.title.bold), color: pal(d, p.title.color),
         align: 'center', fontFace: fontOf(d),
+        _edit: { field: 'steps', index: i, key: 'title' },
       });
       objects.push({
         kind: 'text', x: x + 0.15, y: a.y + p.desc.offsetY, w: w - 0.3, h: p.desc.h, text: String(st.desc || ''),
         fontSize: sizeOf(d, p.desc.size), color: pal(d, p.desc.color),
         align: 'center', valign: 'top', fontFace: fontOf(d),
+        _edit: { field: 'steps', index: i, key: 'desc' },
       });
     });
   },
@@ -288,7 +306,9 @@ const BODY = {
     const p = d.components.statCards;
     const stats = (ctx.slide.stats || []).slice(0, p.maxItems || 4);
     if (stats.length === 0) return;
-    const a = p.area;
+    const a = ctx.bodyRect
+      ? { x: ctx.bodyRect[0], y: ctx.bodyRect[1], w: ctx.bodyRect[2], h: ctx.bodyRect[3], gap: p.area.gap }
+      : p.area;
     const w = (a.w - a.gap * (stats.length - 1)) / stats.length;
     stats.forEach((st, i) => {
       const x = a.x + i * (w + a.gap);
@@ -301,11 +321,13 @@ const BODY = {
         kind: 'text', x, y: a.y + p.value.offsetY, w, h: p.value.h, text: String(st.value || ''),
         fontSize: sizeOf(d, p.value.size), bold: Boolean(p.value.bold), color: pal(d, p.value.color),
         align: 'center', valign: 'middle', fontFace: fontOf(d),
+        _edit: { field: 'stats', index: i, key: 'value' },
       });
       objects.push({
         kind: 'text', x: x + 0.1, y: a.y + p.label.offsetY, w: w - 0.2, h: p.label.h, text: String(st.label || ''),
         fontSize: sizeOf(d, p.label.size), color: pal(d, p.label.color),
         align: 'center', fontFace: fontOf(d),
+        _edit: { field: 'stats', index: i, key: 'label' },
       });
     });
   },
@@ -314,28 +336,53 @@ const BODY = {
 };
 
 // ---------- 主入口 ----------
+// 候选选择：① slide._variant 显式指定（用户「换版式」按钮，按候选数取模）
+// ② 有配图且有图片版式 → 优先；③ 默认按页码轮换，整本 deck 版式有节奏变化
+function findVariant(d, cand) {
+  const [fam, varName = 'default'] = String(cand).split('.');
+  return ((((d.families || {})[fam] || {}).variants || {})[varName]) || null;
+}
+
+function pickCandidate(d, type, slide, ctx) {
+  const all = ((d.typeMapping || {})[type] || {}).candidates || [];
+  if (all.length === 0) return null;
+  if (typeof slide._variant === 'number' && slide._variant >= 0) {
+    return all[slide._variant % all.length];
+  }
+  // 图片专属版式（wantsImage）：无图时剔除（避免版式留空），有图时优先；
+  // 全部都是图片版式时保持原样，让 bodyRect 兜底渲染
+  const imageOnly = all.filter((c) => {
+    const v = findVariant(d, c);
+    return v && v.image && v.wantsImage;
+  });
+  let cands = all;
+  if (imageOnly.length > 0 && imageOnly.length < all.length) {
+    cands = slide.image ? imageOnly : all.filter((c) => !imageOnly.includes(c));
+  }
+  return cands[ctx.index % cands.length];
+}
+
 function resolveSlide(d, slide, ctx) {
   const type = (d.typeMapping && d.typeMapping[slide.type]) ? slide.type : 'bullets';
-  const cand = d.typeMapping[type].candidates[0]; // v1：取首候选
-  const [fam, varName = 'default'] = cand.split('.');
-  const variant = (((d.families || {})[fam] || {}).variants || {})[varName] || {};
+  const cand = pickCandidate(d, type, slide, ctx);
+  const variant = (cand && findVariant(d, cand)) || {};
+  const bgDef = variant.background || { color: 'bg' };
 
   const out = { background: undefined, objects: [] };
 
   // 背景：纯色 / 图片（可多图轮换）+ 渐变蒙版（可多层）
-  const bg = variant.background || { color: 'bg' };
-  out.background = { color: pal(d, bg.color || 'bg') };
-  const images = bg.images || (bg.image ? [bg.image] : []);
+  out.background = { color: pal(d, bgDef.color || 'bg') };
+  const images = bgDef.images || (bgDef.image ? [bgDef.image] : []);
   if (images.length > 0) {
     const img = images[ctx.index % images.length];
     out.objects.push({ kind: 'image', src: assetPath(d, img), x: 0, y: 0, w: d.canvas.width, h: d.canvas.height });
   }
-  const overlays = bg.overlays || (bg.overlay ? [bg.overlay] : []);
+  const overlays = bgDef.overlays || (bgDef.overlay ? [bgDef.overlay] : []);
   for (const ov of overlays) {
     out.objects.push(...overlayBands({ ...ov, color: pal(d, ov.color || 'bg') }, d.canvas));
   }
 
-  // 页面级装饰 → 槽位 → chrome → 主体
+  // 页面级装饰 → 槽位 → chrome → 配图 → 主体
   for (const dec of variant.decorations || []) {
     out.objects.push(...resolveDecoration(d, dec.use, dec.at));
   }
@@ -343,7 +390,19 @@ function resolveSlide(d, slide, ctx) {
   for (const c of variant.chrome || []) {
     if (CHROME[c]) CHROME[c](d, ctx, out.objects);
   }
-  if (BODY[type]) BODY[type](d, ctx, out.objects);
+  // 配图槽（variant.image 定义位置；slide.image 由生成管线的配图流程填充）
+  if (slide.image && variant.image) {
+    const [ix, iy, iw, ih] = variant.image.rect;
+    const imgObj = { kind: 'image', src: slide.image.path, x: ix, y: iy, w: iw, h: ih };
+    if (slide.image.url) imgObj.url = slide.image.url;
+    if (variant.image.border) {
+      imgObj.line = { color: pal(d, variant.image.border), width: 1 };
+    }
+    out.objects.push(imgObj);
+  }
+  if (BODY[type]) {
+    BODY[type](d, { ...ctx, bodyRect: variant.bodyRect }, out.objects);
+  }
   return out;
 }
 

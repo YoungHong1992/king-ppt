@@ -151,8 +151,8 @@ function scrollToSlide(i) {
 function renderOutline(outline) {
   const box = $('outline-box');
   box.classList.remove('hidden', 'collapsed');
-  // 模板选择条只在「待生成」阶段出现；生成后切换模板不会重排已有页，不再展示
-  $('outline-tpl').classList.toggle('hidden', state.phase !== 'outline');
+  // 模板选择条全程可用：生成前决定初始模板，生成后切换即整本重排
+  $('outline-tpl').classList.toggle('hidden', false);
   updateOutlineHint();
   const list = $('outline-list');
   list.innerHTML = '';
@@ -255,8 +255,15 @@ async function doSlides() {
           const note = data.degraded
             ? `其中 ${data.degraded} 页多次生成异常，已按大纲自动降级为基础版式（可用修改指令重写该页）。`
             : '';
-          finishTyping(msg, `全部 ${total} 页生成完成。${note}可以继续输入修改指令，或点击右上角导出。`);
+          const skippedImg = state.slides.filter((s) => s && s._imageSkipped).length;
+          const imgNote = skippedImg
+            ? ` ${skippedImg} 页配图未生成（未配置或调用生图模型失败），可在「模型设置」绑定图像生成模型后重新生成该页。`
+            : '';
+          finishTyping(msg, `全部 ${total} 页生成完成。${note}${imgNote}可以直接点击幻灯片上的文字修改，或继续输入指令。`);
           state.phase = 'slides';
+          // 切到可编辑形态重绘（就地编辑 + 单页工具条）
+          slidesEl.innerHTML = '';
+          state.slides.forEach((s) => s && renderSlide(s));
           renderOutline(state.outline); // 重建为可点击定位形态
           $('outline-box').classList.add('collapsed'); // 收起，点标题栏可再展开
           $('export-btn').disabled = false;
@@ -303,6 +310,96 @@ async function doRevise(instruction) {
 }
 
 // ---------- 预览渲染 ----------
+// 就地编辑提交：把 DOM 上的文字写回 slide JSON（导出/会话保存都以它为准）
+function applySlideEdit(slide, edit, value) {
+  const { field, index, key } = edit;
+  if (field === 'table') {
+    slide.headers = value.headers;
+    slide.rows = value.rows;
+  } else if (index !== undefined && key !== undefined) {
+    if (Array.isArray(slide[field]) && slide[field][index]) slide[field][index][key] = value;
+  } else if (Array.isArray(value)) {
+    slide[field] = value;
+  } else {
+    slide[field] = value;
+  }
+  scheduleSave();
+}
+
+// 单页工具条：换版式（本地重排）/ 重新生成（重写该页内容）
+async function switchVariant(i) {
+  const s = state.slides[i];
+  if (!s || s.type === 'free' || !state.outline) return;
+  try {
+    s._variant = (typeof s._variant === 'number' ? s._variant + 1 : 1);
+    const resp = await api('/api/reresolve', {
+      slides: [s], templateId: state.templateId, title: state.outline?.title, total: state.slides.filter(Boolean).length,
+    });
+    const data = await resp.json();
+    s.scene = data.scenes[0];
+    s.warnings = data.warningsList[0] || [];
+    if (data.canvas) state.canvas = data.canvas;
+    renderSlide(s);
+    scheduleSave();
+  } catch (err) {
+    toast(`换版式失败：${err.message}`, 'error');
+  }
+}
+
+async function regenSlide(i) {
+  const s = state.slides[i];
+  if (!s || !state.outline || state.busy) return;
+  const card = slidesEl.querySelector(`.slide-card[data-index="${i}"] .slide-regen`);
+  if (card) { card.disabled = true; card.textContent = '生成中…'; }
+  try {
+    const feedback = (s.warnings || []).filter((w) => w.level !== 'info').map((w) => `- ${w.message}`).join('\n');
+    const resp = await api('/api/slide/regen', {
+      outline: state.outline, index: i, templateId: state.templateId, feedback: feedback || undefined,
+    });
+    const data = await resp.json();
+    data.slide.warnings = data.warnings;
+    state.slides[i] = data.slide;
+    renderSlide(data.slide);
+    scheduleSave();
+    toast(`第 ${i + 1} 页已重新生成`, 'ok');
+  } catch (err) {
+    toast(`重新生成失败：${err.message}`, 'error');
+    if (card) { card.disabled = false; card.textContent = '重新生成'; }
+  }
+}
+
+function buildSlideToolbar(s) {
+  const bar = document.createElement('div');
+  bar.className = 'slide-toolbar';
+  if (s.type !== 'free') {
+    const btnVariant = document.createElement('button');
+    btnVariant.type = 'button';
+    btnVariant.className = 'slide-tool-btn';
+    btnVariant.textContent = '换版式';
+    btnVariant.title = '切换该页的版式（不重新生成内容）';
+    btnVariant.addEventListener('click', () => switchVariant(s.index));
+    bar.appendChild(btnVariant);
+  }
+  const btnRegen = document.createElement('button');
+  btnRegen.type = 'button';
+  btnRegen.className = 'slide-tool-btn slide-regen';
+  btnRegen.textContent = '重新生成';
+  btnRegen.title = '让 AI 重写这一页的内容';
+  btnRegen.addEventListener('click', () => regenSlide(s.index));
+  bar.appendChild(btnRegen);
+  return bar;
+}
+
+function buildWarnBadge(warnings) {
+  const badge = document.createElement('div');
+  badge.className = 'slide-warn';
+  const errs = warnings.filter((w) => w.level === 'error').length;
+  badge.textContent = `⚠ ${warnings.length}`;
+  badge.title = warnings.map((w) => `[${w.level === 'error' ? '错误' : '提示'}] ${w.message}`).join('\n');
+  if (errs > 0) badge.classList.add('has-error');
+  return badge;
+}
+
 function renderSlide(s) {
   let card = slidesEl.querySelector(`[data-index="${s.index}"]`);
   if (!card) {
@@ -316,16 +413,32 @@ function renderSlide(s) {
       .forEach((el) => slidesEl.appendChild(el));
   }
   const num = `<div class="slide-num">${s.index + 1}</div>`;
-  // free 自由排版页：HTML iframe 渲染，不走场景图
-  if (s.type === 'free' && s.html) {
+  // free 自由排版页：svg（新）矢量预览 / html（旧会话）iframe，均不走场景图
+  if (s.type === 'free' && (s.svg || s.html)) {
     card.innerHTML = num;
-    card.appendChild(HtmlFrame.build(s.html));
+    const frame = s.svg ? SvgFrame.build(s.svg) : HtmlFrame.build(s.html);
+    if (frame) card.appendChild(frame);
+    if (state.phase === 'slides') card.appendChild(buildSlideToolbar(s));
     return;
   }
   // Scene Graph 驱动渲染（新数据）；无 scene 的旧数据走下方手写渲染兜底
   if (s.scene) {
     card.innerHTML = num;
-    card.appendChild(DomPainter.paintInto(s.scene, state.templateId, state.canvas || undefined));
+    const slideEl = document.createElement('div');
+    slideEl.className = 'slide';
+    const editable = state.phase === 'slides';
+    DomPainter.paint(s.scene, slideEl, {
+      canvas: state.canvas || undefined,
+      templateId: state.templateId,
+      ...(editable ? { onEdit: (edit, value) => {
+        applySlideEdit(s, edit, value);
+        // bullets/table 条目增删后重画该页，保持视图与数据一致
+        if (edit.field === 'table' || Array.isArray(value)) renderSlide(s);
+      } } : {}),
+    });
+    card.appendChild(slideEl);
+    if (Array.isArray(s.warnings) && s.warnings.length > 0) card.appendChild(buildWarnBadge(s.warnings));
+    if (state.phase === 'slides') card.appendChild(buildSlideToolbar(s));
     return;
   }
   let inner = '';
@@ -771,8 +884,25 @@ async function selectTemplate(id) {
     const { canvas } = await fetchTplSample(id);
     state.canvas = canvas;
   } catch { /* 画布沿用旧值，meta 事件也会更新 */ }
-  // 已有 slides 用新模板场景重渲染（场景随 SSE/revise 下发，旧场景沿用各自模板重画）
-  state.slides.forEach((s) => s && s.scene && renderSlide(s));
+  // 已有幻灯片：用新模板整本重排（内容不变，只重算场景图）；
+  // free 页 SVG/HTML 是按旧模板风格画的，保持原样
+  const hasSlides = state.slides.filter(Boolean).length > 0;
+  if (hasSlides) {
+    try {
+      const resp = await api('/api/reresolve', { slides: state.slides, templateId: id, title: state.outline?.title });
+      const data = await resp.json();
+      (data.scenes || []).forEach((scene, i) => {
+        if (state.slides[i]) {
+          state.slides[i].scene = scene;
+          state.slides[i].warnings = (data.warningsList || [])[i] || [];
+        }
+      });
+      state.canvas = data.canvas || state.canvas;
+    } catch (err) {
+      toast(`换模板重排失败：${err.message}`, 'error');
+    }
+  }
+  state.slides.forEach((s) => s && renderSlide(s));
   scheduleSave();
 }
 

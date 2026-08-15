@@ -36,6 +36,7 @@ window.DomPainter = (() => {
   function paint(scene, container, opts = {}) {
     const canvas = opts.canvas || DEFAULT_CANVAS;
     const templateId = opts.templateId;
+    const onEdit = typeof opts.onEdit === 'function' ? opts.onEdit : null;
     const W = canvas.width;
     const H = canvas.height;
     // 单位换算：英寸 → 容器百分比；pt → cqh（1in = 72pt，容器高 = H 英寸）
@@ -44,12 +45,14 @@ window.DomPainter = (() => {
     const ptCqh = (pt) => `${((pt / 72) / H) * 100}cqh`;
     const inCqh = (inch) => `${(inch / H) * 100}cqh`;
     const box = (o) => `left:${xPct(o.x)};top:${yPct(o.y)};width:${xPct(o.w)};height:${yPct(o.h)};`;
+    // 可编辑元素：data-obj 定位到场景对象，bullets/table 再用 data-item/data-cell 定位条目
+    const editAttr = (i) => (onEdit ? ` data-obj="${i}"` : '');
 
     container.classList.add('dp-scene');
     const bg = scene.background && scene.background.color;
     container.style.background = bg ? cssColor(bg) : '';
 
-    container.innerHTML = (scene.objects || []).map((o) => {
+    container.innerHTML = (scene.objects || []).map((o, i) => {
       if (o.kind === 'text') {
         const justify = { left: 'flex-start', center: 'center', right: 'flex-end' }[o.align] || 'flex-start';
         const alignItems = { top: 'flex-start', middle: 'center', bottom: 'flex-end' }[o.valign] || 'flex-start';
@@ -60,7 +63,9 @@ window.DomPainter = (() => {
           + (o.bold ? 'font-weight:700;' : '')
           + (o.fontFace ? `font-family:'${esc(o.fontFace)}','Microsoft YaHei',sans-serif;` : '')
           + (o.charSpacing ? `letter-spacing:${ptCqh(o.charSpacing)};` : '');
-        return `<div class="dp-text" style="${style}"><span>${esc(o.text)}</span></div>`;
+        const editable = onEdit && o._edit;
+        return `<div class="dp-text${editable ? ' dp-editable' : ''}" style="${style}"${editAttr(i)}>`
+          + `<span ${editable ? 'contenteditable="true" spellcheck="false"' : ''}>${esc(o.text)}</span></div>`;
       }
 
       if (o.kind === 'shape') {
@@ -94,8 +99,10 @@ window.DomPainter = (() => {
           + (o.fontFace ? `font-family:'${esc(o.fontFace)}','Microsoft YaHei',sans-serif;` : '');
         const gap = o.paraSpaceAfter ? `margin-bottom:${ptCqh(o.paraSpaceAfter)};` : '';
         const bc = cssColor(o.bulletColor) || 'currentColor';
-        const items = (o.items || []).map((t) =>
-          `<div class="dp-bullet" style="${gap}"><span class="dp-bullet-mark" style="color:${bc}">▪</span><span>${esc(t)}</span></div>`
+        const editable = onEdit && o._edit;
+        const items = (o.items || []).map((t, j) =>
+          `<div class="dp-bullet" style="${gap}"><span class="dp-bullet-mark" style="color:${bc}">▪</span>`
+          + `<span class="dp-bullet-text${editable ? ' dp-editable' : ''}"${editable ? ` data-obj="${i}" data-item="${j}" contenteditable="true" spellcheck="false"` : ''}>${esc(t)}</span></div>`
         ).join('');
         return `<div class="dp-bullets" style="${style}">${items}</div>`;
       }
@@ -106,16 +113,18 @@ window.DomPainter = (() => {
         const border = o.border || {};
         const bd = `border:${ptCqh(border.pt || 1)} solid ${cssColor(border.color) || '#d9e2ec'};`;
         const style = box(o) + (o.fontFace ? `font-family:'${esc(o.fontFace)}','Microsoft YaHei',sans-serif;` : '');
-        const ths = (o.headers || []).map((h) =>
+        const editable = onEdit && o._edit;
+        const ec = (r, c) => (editable ? ` data-obj="${i}" data-cell="${r}.${c}" contenteditable="true" spellcheck="false"` : '');
+        const ths = (o.headers || []).map((h, c) =>
           `<th style="background:${cssColor(hd.fill) || '#333'};color:${cssColor(hd.color) || '#fff'};`
           + `font-size:${ptCqh(hd.fontSize || 13)};${hd.bold ? 'font-weight:700;' : ''}`
-          + `text-align:${hd.align || 'center'};height:${yPct(o.rowH || 0.4)};${bd}">${esc(h)}</th>`
+          + `text-align:${hd.align || 'center'};height:${yPct(o.rowH || 0.4)};${bd}"${ec(0, c)}>${esc(h)}</th>`
         ).join('');
         const trs = (o.rows || []).map((r, ri) => {
           const bgc = ri % 2 === 0 ? cssColor(cell.plain) : cssColor(cell.zebra);
-          const tds = (Array.isArray(r) ? r : [r]).map((c) =>
+          const tds = (Array.isArray(r) ? r : [r]).map((c, ci) =>
             `<td style="color:${cssColor(cell.color) || 'inherit'};font-size:${ptCqh(cell.fontSize || 12)};`
-            + `height:${yPct(o.rowH || 0.4)};${bgc ? `background:${bgc};` : ''}${bd}">${esc(c)}</td>`
+            + `height:${yPct(o.rowH || 0.4)};${bgc ? `background:${bgc};` : ''}${bd}"${ec(ri + 1, ci)}>${esc(c)}</td>`
           ).join('');
           return `<tr>${tds}</tr>`;
         }).join('');
@@ -123,7 +132,8 @@ window.DomPainter = (() => {
       }
 
       if (o.kind === 'image') {
-        const url = imgUrl(o.src, templateId);
+        // 生成配图带可直接访问的 url；模板素材走 assets 路由
+        const url = o.url || imgUrl(o.src, templateId);
         if (!url) {
           // staging 场景（上传确认面板）的 src 指向服务器临时目录，前端不可达，色块占位
           return `<div class="dp-shape dp-image-stub" style="${box(o)}"></div>`;
@@ -133,6 +143,50 @@ window.DomPainter = (() => {
 
       return '';
     }).join('');
+
+    if (onEdit) wireEditable(container, scene, onEdit);
+  }
+
+  // 就地编辑提交：blur/Enter 时把 DOM 文本写回 slide 字段（经 app.js 的 onEdit 回调）
+  function wireEditable(container, scene, onEdit) {
+    const editableEls = container.querySelectorAll('[contenteditable]');
+    if (editableEls.length === 0) return;
+    for (const el of editableEls) {
+      el.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault();
+          el.blur();
+        }
+      });
+      el.addEventListener('blur', () => {
+        const o = scene.objects[Number(el.dataset.obj)];
+        if (!o || !o._edit) return;
+        if (o.kind === 'text') {
+          let v = el.textContent.replace(/\s+/g, ' ').trim();
+          const p = o._edit.prefix;
+          if (p && v.startsWith(p)) v = v.slice(p.length).trim();
+          if (v !== o.text) onEdit(o._edit, v);
+        } else if (o.kind === 'bullets') {
+          const items = [...container.querySelectorAll(`[data-obj="${el.dataset.obj}"].dp-bullet-text`)]
+            .map((n) => n.textContent.replace(/\s+/g, ' ').trim())
+            .filter((t) => t !== '');
+          onEdit(o._edit, items);
+        } else if (o.kind === 'table') {
+          const cells = [...container.querySelectorAll(`[data-obj="${el.dataset.obj}"][data-cell]`)];
+          const headers = cells.filter((n) => n.dataset.cell.startsWith('0.'))
+            .sort((a, b) => Number(a.dataset.cell.split('.')[1]) - Number(b.dataset.cell.split('.')[1]))
+            .map((n) => n.textContent.trim());
+          const maxRow = cells.reduce((m, n) => Math.max(m, Number(n.dataset.cell.split('.')[0])), 0);
+          const rows = [];
+          for (let r = 1; r <= maxRow; r++) {
+            rows.push(cells.filter((n) => n.dataset.cell.startsWith(`${r}.`))
+              .sort((a, b) => Number(a.dataset.cell.split('.')[1]) - Number(b.dataset.cell.split('.')[1]))
+              .map((n) => n.textContent.trim()));
+          }
+          onEdit(o._edit, { headers, rows });
+        }
+      });
+    }
   }
 
   // 独立创建一块 .slide 画布并画入场景（画廊卡片、确认面板样例页用）

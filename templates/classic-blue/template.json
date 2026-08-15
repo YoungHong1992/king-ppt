@@ -43,7 +43,9 @@
     }
   },
   "decorations": {
-    "titleBar": { "kind": "primitive", "shape": "rect", "fill": "accent", "defaultSize": [1.2, 0.05], "role": "decoration", "behavior": "fixed" }
+    "titleBar": { "kind": "primitive", "shape": "rect", "fill": "accent", "defaultSize": [1.2, 0.05], "role": "decoration", "behavior": "fixed" },
+    "sideBar": { "kind": "primitive", "shape": "rect", "fill": "accent", "defaultSize": [0.08, 2.4], "role": "decoration", "behavior": "fixed" },
+    "coverBand": { "kind": "primitive", "shape": "rect", "fill": "accent", "defaultSize": [10, 1.42], "role": "decoration", "behavior": "fixed" }
   },
   "families": {
     "cover": {
@@ -53,6 +55,15 @@
           "slots": {
             "title": { "rect": [0.8, 1.9, 8.4, 1.2], "size": "display", "color": "onDark", "bold": true, "align": "center", "role": "content", "behavior": "replace" },
             "subtitle": { "rect": [0.8, 3.2, 8.4, 0.8], "size": "conclusion", "color": "onDarkMuted", "align": "center", "role": "content", "behavior": "generate" }
+          }
+        },
+        "band": {
+          "background": { "color": "primaryDeep" },
+          "decorations": [ { "use": "coverBand", "at": [0, 4.2] } ],
+          "slots": {
+            "title": { "rect": [0.8, 1.7, 8.4, 1.4], "size": "display", "color": "onDark", "bold": true, "role": "content", "behavior": "replace" },
+            "subtitle": { "rect": [0.8, 3.1, 8.4, 0.7], "size": "conclusion", "color": "onDarkMuted", "role": "content", "behavior": "generate" },
+            "author": { "rect": [0.8, 4.45, 8.4, 0.5], "size": "eyebrow", "color": "primaryDeep", "bold": true, "role": "content", "behavior": "replace" }
           }
         }
       }
@@ -64,6 +75,14 @@
           "slots": {
             "title": { "rect": [0.8, 2.2, 8.4, 1], "size": "sectionTitle", "color": "onDark", "bold": true, "align": "center", "role": "content", "behavior": "replace" },
             "subtitle": { "rect": [0.8, 3.2, 8.4, 0.6], "size": "body", "color": "onDarkMuted", "align": "center", "role": "content", "behavior": "generate" }
+          }
+        },
+        "minimal": {
+          "background": { "color": "surface" },
+          "decorations": [ { "use": "sideBar", "at": [0.55, 2.0] } ],
+          "slots": {
+            "title": { "rect": [0.9, 2.05, 8.2, 1], "size": "sectionTitle", "color": "primary", "bold": true, "role": "content", "behavior": "replace" },
+            "subtitle": { "rect": [0.9, 3.15, 8.2, 0.6], "size": "body", "color": "textMuted", "role": "content", "behavior": "generate" }
           }
         }
       }
@@ -77,6 +96,23 @@
         "cards": {
           "background": { "color": "bg" },
           "chrome": ["pageTitle"]
+        },
+        "tinted": {
+          "background": { "color": "surface" },
+          "chrome": ["pageTitle"]
+        },
+        "accentBar": {
+          "background": { "color": "bg" },
+          "chrome": ["pageTitle"],
+          "decorations": [ { "use": "sideBar", "at": [0.5, 1.7] } ],
+          "bodyRect": [0.9, 1.4, 8.5, 3.9]
+        },
+        "imageRight": {
+          "background": { "color": "bg" },
+          "chrome": ["pageTitle"],
+          "wantsImage": true,
+          "image": { "rect": [6.3, 1.5, 3.2, 3.6], "border": "divider" },
+          "bodyRect": [0.6, 1.5, 5.4, 3.7]
         }
       }
     },
@@ -88,6 +124,14 @@
             "quoteMark": { "rect": [0.8, 0.6, 2, 1.5], "size": 88, "color": "accent", "bold": true, "text": "“", "role": "decoration", "behavior": "fixed" },
             "quote": { "rect": [1.2, 2.0, 7.6, 2], "size": "pageTitle", "color": "onDark", "bold": true, "align": "center", "valign": "middle", "role": "content", "behavior": "generate" },
             "author": { "rect": [1.2, 4.2, 7.6, 0.6], "size": "body", "color": "onDarkMuted", "align": "right", "prefix": "—— ", "role": "content", "behavior": "generate" }
+          }
+        },
+        "light": {
+          "background": { "color": "surface" },
+          "slots": {
+            "quoteMark": { "rect": [0.8, 0.6, 2, 1.5], "size": 88, "color": "accent", "bold": true, "text": "“", "role": "decoration", "behavior": "fixed" },
+            "quote": { "rect": [1.2, 2.0, 7.6, 2], "size": "pageTitle", "color": "text", "bold": true, "align": "center", "valign": "middle", "role": "content", "behavior": "generate" },
+            "author": { "rect": [1.2, 4.2, 7.6, 0.6], "size": "body", "color": "textMuted", "align": "right", "prefix": "—— ", "role": "content", "behavior": "generate" }
           }
         }
       }
@@ -132,14 +176,14 @@
     }
   },
   "typeMapping": {
-    "title": { "candidates": ["cover.default"] },
-    "section": { "candidates": ["section.default"] },
-    "bullets": { "candidates": ["content.simple"] },
-    "twoColumn": { "candidates": ["content.cards"] },
-    "table": { "candidates": ["content.simple"] },
-    "steps": { "candidates": ["content.cards"] },
-    "quote": { "candidates": ["closing.default"] },
-    "stats": { "candidates": ["content.cards"] }
+    "title": { "candidates": ["cover.default", "cover.band"] },
+    "section": { "candidates": ["section.default", "section.minimal"] },
+    "bullets": { "candidates": ["content.simple", "content.accentBar", "content.imageRight"] },
+    "twoColumn": { "candidates": ["content.cards", "content.tinted"] },
+    "table": { "candidates": ["content.simple", "content.tinted"] },
+    "steps": { "candidates": ["content.cards", "content.tinted"] },
+    "quote": { "candidates": ["closing.default", "closing.light"] },
+    "stats": { "candidates": ["content.cards", "content.tinted"] }
   },
   "constraints": {
     "chars": { "pageTitle": 20, "bullet": 40, "cardTitle": 10, "conclusion": 50, "subtitle": 40, "tableCell": 20, "stepDesc": 30, "quote": 50 }

@@ -96,6 +96,23 @@
         "cards": {
           "background": { "color": "bg" },
           "chrome": ["titleBand", "summaryBar", "footer"]
+        },
+        "tinted": {
+          "background": { "color": "surface" },
+          "chrome": ["titleBand", "summaryBar", "footer"]
+        },
+        "edge": {
+          "background": { "color": "bg" },
+          "chrome": ["titleBand", "summaryBar", "footer"],
+          "decorations": [ { "use": "sideEdge", "at": [0.3, 1.9] }, { "use": "sideEdge", "at": [0.3, 3.2] } ],
+          "bodyRect": [0.85, 1.75, 11.8, 3.2]
+        },
+        "imageRight": {
+          "background": { "color": "bg" },
+          "chrome": ["titleBand", "summaryBar", "footer"],
+          "wantsImage": true,
+          "image": { "rect": [8.9, 1.9, 3.6, 2.9], "border": "divider" },
+          "bodyRect": [0.9, 1.85, 7.6, 3.0]
         }
       }
     },
@@ -107,6 +124,14 @@
             "quoteMark": { "text": "“", "rect": [0.9, 0.7, 2.2, 1.6], "size": 88, "color": "accent", "bold": true, "font": "title", "role": "decoration", "behavior": "fixed" },
             "quote": { "rect": [1.6, 2.4, 10.1, 2.2], "size": 30, "color": "onDark", "bold": true, "align": "center", "valign": "middle", "font": "title", "role": "content", "behavior": "generate" },
             "author": { "rect": [1.6, 5.0, 10.1, 0.6], "size": "eyebrow", "color": "onDarkMuted", "align": "right", "prefix": "—— ", "role": "content", "behavior": "generate" }
+          }
+        },
+        "light": {
+          "background": { "color": "surface" },
+          "decorations": [ { "use": "ribbonCover", "at": [0.9, 0.9] } ],
+          "slots": {
+            "quote": { "rect": [1.6, 2.4, 10.1, 2.2], "size": 30, "color": "text", "bold": true, "align": "center", "valign": "middle", "font": "title", "role": "content", "behavior": "generate" },
+            "author": { "rect": [1.6, 5.0, 10.1, 0.6], "size": "eyebrow", "color": "textMuted", "align": "right", "prefix": "—— ", "role": "content", "behavior": "generate" }
           }
         }
       }
@@ -171,12 +196,12 @@
   "typeMapping": {
     "title": { "candidates": ["cover.default"] },
     "section": { "candidates": ["section.default"] },
-    "bullets": { "candidates": ["content.simple"] },
-    "twoColumn": { "candidates": ["content.cards"] },
-    "table": { "candidates": ["content.simple"] },
-    "steps": { "candidates": ["content.cards"] },
-    "quote": { "candidates": ["closing.default"] },
-    "stats": { "candidates": ["content.cards"] }
+    "bullets": { "candidates": ["content.simple", "content.edge", "content.imageRight"] },
+    "twoColumn": { "candidates": ["content.cards", "content.tinted"] },
+    "table": { "candidates": ["content.simple", "content.tinted"] },
+    "steps": { "candidates": ["content.cards", "content.tinted"] },
+    "quote": { "candidates": ["closing.default", "closing.light"] },
+    "stats": { "candidates": ["content.cards", "content.tinted"] }
   },
   "constraints": {
     "chars": { "pageTitle": 20, "bullet": 40, "cardTitle": 10, "conclusion": 50, "subtitle": 40, "tableCell": 20, "stepDesc": 30, "quote": 50 }

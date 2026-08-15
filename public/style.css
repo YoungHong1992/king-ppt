@@ -623,6 +623,66 @@ main { flex: 1; display: flex; overflow: hidden; min-height: 0; }
 .slide.dp-scene { padding: 0; }
 .slide-card:hover .slide { box-shadow: var(--shadow-lg); transform: translateY(-2px); }
 
+/* ---- 就地编辑（dashi 式「产物即编辑器」）---- */
+.dp-editable { cursor: text; }
+.dp-editable:hover { outline: 1.5px dashed rgba(99, 102, 241, 0.55); outline-offset: 1px; }
+.dp-editable:focus {
+  outline: 2px solid var(--brand-1);
+  outline-offset: 1px;
+  background: rgba(99, 102, 241, 0.06);
+  border-radius: 2px;
+}
+/* bullets 的可编辑文本与项目符号同行对齐 */
+.dp-bullet { display: flex; align-items: flex-start; gap: 0.45em; }
+.dp-bullet-mark { flex: none; }
+.dp-bullet-text { min-width: 0; }
+.dp-table-wrap .dp-editable { display: block; padding: 0.15em 0.3em; }
+
+/* ---- 单页工具条（换版式 / 重新生成）---- */
+.slide-toolbar {
+  position: absolute;
+  top: -13px; right: -6px;
+  display: flex; gap: 6px;
+  opacity: 0;
+  transform: translateY(4px);
+  transition: opacity 0.18s var(--ease), transform 0.18s var(--ease);
+  z-index: 3;
+}
+.slide-card:hover .slide-toolbar { opacity: 1; transform: translateY(0); }
+.slide-tool-btn {
+  border: 1px solid var(--border, #e2e8f0);
+  background: #fff;
+  color: var(--text, #334155);
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+  box-shadow: var(--shadow-sm, 0 1px 3px rgba(0,0,0,0.08));
+  transition: border-color 0.15s, color 0.15s;
+}
+.slide-tool-btn:hover { border-color: var(--brand-1); color: var(--brand-1); }
+.slide-tool-btn:disabled { opacity: 0.55; cursor: default; }
+
+/* ---- 质量警告条（溢出检测 / 首页门禁结果）---- */
+.slide-warn {
+  position: absolute;
+  bottom: -12px; left: 10px;
+  font-size: 11.5px;
+  color: #92700c;
+  background: #fdf3d7;
+  border: 1px solid #ecd9a0;
+  border-radius: 999px;
+  padding: 2px 9px;
+  cursor: help;
+  white-space: nowrap;
+  z-index: 2;
+}
+.slide-warn.has-error { color: #b3261e; background: #fde8e6; border-color: #f3c1bc; }
+
+/* free 自由排版页 SVG：内联矢量，等比铺满 */
+.slide.svg-frame { padding: 0; }
+.slide.svg-frame svg { display: block; width: 100%; height: 100%; }
+
 .slide-cover {
   background: linear-gradient(135deg, #1f4e79, #2e6ea8);
   display: flex;

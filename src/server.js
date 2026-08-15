@@ -8,6 +8,8 @@ const { setApiKey, getApiKey, BASE_URL, MODEL } = require('./llm');
 const llmprovider = require('./llmprovider');
 const { loadDescriptor, listDescriptors } = require('./descriptor');
 const { resolve } = require('./layout-resolver');
+const { validateSlide } = require('./validate');
+const assets = require('./assets');
 const { extractFromPptx, saveTemplate } = require('./extract');
 const { parseSourcePages } = require('./pptx-pages');
 const sessions = require('./sessions');
@@ -24,8 +26,8 @@ app.use(express.static(path.join(__dirname, '..', 'public')));
 
 function statusOf(err) {
   if (err.code === 'NO_API_KEY') return 401;
-  if (err.code === 'SESSION_NOT_FOUND') return 404;
-  if (err.code === 'BAD_SESSION_ID' || err.code === 'NO_MODEL_CONFIG' || err.code === 'CAPABILITY_NOT_SUPPORTED') return 400;
+  if (err.code === 'SESSION_NOT_FOUND' || err.code === 'ASSET_NOT_FOUND') return 404;
+  if (err.code === 'BAD_SESSION_ID' || err.code === 'NO_MODEL_CONFIG' || err.code === 'CAPABILITY_NOT_SUPPORTED' || err.code === 'BAD_ASSET_NAME') return 400;
   return 500;
 }
 
@@ -235,6 +237,47 @@ app.delete('/api/sessions/:id', wrap(async (req, res) => {
   res.json({ ok: true });
 }));
 
+// ---------- 配图 ----------
+// 幻灯片带 imagePrompt 且已配置生图模型时：生成 → 存 ~/.king-ppt/assets → slide.image
+// 失败不阻断生成（页面上只是没有配图），标记 _imageSkipped 供前端提示
+async function attachSlideImage(slide) {
+  if (!slide.imagePrompt || slide.image) return;
+  try {
+    const result = await llmprovider.generateImage(slide.imagePrompt, { size: '1024x1024' });
+    slide.image = result.b64
+      ? assets.saveImageBase64(result.b64, 'png')
+      : await assets.saveImageFromUrl(result.url);
+  } catch (err) {
+    slide._imageSkipped = String(err.message || err);
+  }
+}
+
+function imageCapabilityOn() {
+  try {
+    return Boolean(llmprovider.listActive().image);
+  } catch {
+    return false;
+  }
+}
+
+// 生成配图文件（slide.image.url 引用）
+app.get('/api/assets/:file', wrap(async (req, res) => {
+  const full = assets.resolveAsset(req.params.file);
+  res.sendFile(full);
+}));
+
+// ---------- 幻灯片生成管线 ----------
+// 单页生成的公共出口：配图 → 场景图 → 质量校验
+async function materializeSlide({ slide, d, outline, index }) {
+  await attachSlideImage(slide);
+  const total = outline.pages.length;
+  const scene = resolve(d, [slide], { title: outline.title, index, total }).slides[0];
+  const warnings = scene
+    ? validateSlide({ slide, scene, canvas: d.canvas, constraints: d.constraints && d.constraints.chars, index })
+    : [];
+  return { slide, scene, warnings };
+}
+
 app.post('/api/outline', wrap(async (req, res) => {
   const { topic, pages, extra } = req.body;
   if (!topic || !topic.trim()) return res.status(400).json({ error: '请提供主题' });
@@ -242,7 +285,7 @@ app.post('/api/outline', wrap(async (req, res) => {
   res.json(outline);
 }));
 
-// SSE：逐页生成并推送（每页附带该模板的场景图）
+// SSE：逐页生成并推送（每页附带该模板的场景图 + 质量警告；首页过门禁）
 app.post('/api/slides', async (req, res) => {
   try {
     if (req.body.apiKey) setApiKey(req.body.apiKey);
@@ -259,16 +302,28 @@ app.post('/api/slides', async (req, res) => {
       Connection: 'keep-alive',
     });
     const send = (event, data) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-    send('meta', { canvas: d.canvas, templateId: d._id });
+    send('meta', { canvas: d.canvas, templateId: d._id, imageCapable: imageCapabilityOn() });
 
     const total = outline.pages.length;
     let degraded = 0; // 重试失败、走了兜底页的页数
     for (let i = 0; i < total; i++) {
       try {
-        const slide = await generateSlide({ outline, index: i, constraints, freeStyle });
-        if (slide._recovered) degraded++;
-        const scene = resolve(d, [slide], { title: outline.title, index: i, total }).slides[0];
-        send('slide', { ...slide, scene });
+        let out = await materializeSlide({
+          slide: await generateSlide({ outline, index: i, constraints, freeStyle }),
+          d, outline, index: i,
+        });
+        if (out.slide._recovered) degraded++;
+        // 首页门禁：封面出 error 级问题会让整本气质崩掉，带反馈重试一次，仍差则保留较好版本
+        if (i === 0 && out.warnings.some((w) => w.level === 'error')) {
+          const feedback = out.warnings.filter((w) => w.level !== 'info').map((w) => `- ${w.message}`).join('\n');
+          const retry = await materializeSlide({
+            slide: await generateSlide({ outline, index: i, constraints, freeStyle, feedback }),
+            d, outline, index: i,
+          });
+          const errs = (ws) => ws.filter((w) => w.level === 'error').length;
+          if (errs(retry.warnings) < errs(out.warnings)) out = retry;
+        }
+        send('slide', { ...out.slide, scene: out.scene, warnings: out.warnings });
       } catch (err) {
         send('slideError', { index: i, error: err.message });
       }
@@ -284,6 +339,46 @@ app.post('/api/slides', async (req, res) => {
     }
   }
 });
+
+// 单页重新生成（换内容重写该页；feedback 可选注入修正要求）
+app.post('/api/slide/regen', wrap(async (req, res) => {
+  const { outline, index, templateId, feedback } = req.body;
+  if (!outline || !Array.isArray(outline.pages) || !(index >= 0 && index < outline.pages.length)) {
+    return res.status(400).json({ error: '参数不完整' });
+  }
+  const d = loadDescriptor(templateId);
+  const constraints = d.constraints && d.constraints.chars;
+  const slide = await generateSlide({ outline, index, constraints, freeStyle: buildFreeStyle(d), feedback });
+  const out = await materializeSlide({ slide, d, outline, index });
+  res.json(out);
+}));
+
+// 本地重排：slides 不变（就地编辑 / 换版式 / 换模板后），只重算场景图与警告
+// total 可选（单页重排时传整本页数，页脚页码才正确）；index 用 slide.index（真实页位）
+app.post('/api/reresolve', wrap(async (req, res) => {
+  const { slides, templateId, title, total } = req.body;
+  if (!Array.isArray(slides) || slides.length === 0) {
+    return res.status(400).json({ error: '没有可重排的幻灯片' });
+  }
+  const d = loadDescriptor(templateId);
+  const constraints = d.constraints && d.constraints.chars;
+  const deckTotal = Number.isFinite(Number(total)) && Number(total) > 0 ? Number(total) : slides.length;
+  const scenes = [];
+  const warningsList = [];
+  for (let pos = 0; pos < slides.length; pos++) {
+    const slide = slides[pos] || {};
+    if (slide.type === 'free') {
+      scenes.push(null);
+      warningsList.push([]);
+      continue;
+    }
+    const index = Number.isFinite(Number(slide.index)) ? Number(slide.index) : pos;
+    const scene = resolve(d, [slide], { title, index, total: deckTotal }).slides[0];
+    scenes.push(scene);
+    warningsList.push(validateSlide({ slide, scene, canvas: d.canvas, constraints, index }));
+  }
+  res.json({ scenes, warningsList, canvas: d.canvas, templateId: d._id });
+}));
 
 app.post('/api/revise', wrap(async (req, res) => {
   const { slides, instruction, templateId } = req.body;
