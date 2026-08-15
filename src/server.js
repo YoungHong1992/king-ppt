@@ -34,6 +34,7 @@ function wrap(handler) {
     try {
       await handler(req, res);
     } catch (err) {
+      if (res.headersSent) return res.end(); // 已开始响应（如 sendFile 中途断开），只能放弃
       res.status(statusOf(err)).json({ error: err.message });
     }
   };
@@ -315,6 +316,9 @@ app.post('/api/export', wrap(async (req, res) => {
 
 // body-parser 等中间件抛出的错误兜底：返回 JSON，避免默认 HTML 错误页让前端只能显示状态码
 app.use((err, req, res, next) => {
+  // 响应头已发出（SSE 流中、sendFile 传输中途客户端断开等）不能再写 JSON：
+  // 交回默认处理器断开连接即可，否则这里二次抛错会把整个进程打挂
+  if (res.headersSent) return next(err);
   const status = err.status || err.statusCode || 500;
   if (status === 413) {
     const hint = req.path === '/api/templates/extract' ? '模板文件需小于 20MB' : '请求体过大';
