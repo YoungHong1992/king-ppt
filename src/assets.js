@@ -3,10 +3,8 @@
 // url 供前端预览（/api/assets/<file>）。文件名用内容哈希，同提示词重生成自然去重。
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
 const crypto = require('crypto');
-
-const ASSETS_DIR = path.join(os.homedir(), '.king-ppt', 'assets');
+const { ASSETS_DIR } = require('./paths');
 const NAME_RE = /^img_[a-f0-9]{16}\.(png|jpe?g|webp)$/;
 
 function ensureDir() {
