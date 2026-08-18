@@ -1,19 +1,21 @@
 {
   "name": "king-ppt",
   "version": "0.1.0",
-  "description": "卷王PPT：本地运行的 AI PPT Agent，对话生成大纲与幻灯片，导出可编辑的 .pptx",
+  "description": "卷王PPT：Agent 驱动的 PPT Skill —— 用户 Agent 当内容源，起网页让人挑模板/实时预览/就地编辑，导出可编辑 .pptx（确定性引擎，无内置大模型）",
   "bin": {
     "king-ppt": "bin/cli.js"
   },
   "scripts": {
-    "start": "node bin/cli.js"
+    "start": "node bin/cli.js serve"
   },
   "keywords": [
     "ppt",
     "pptx",
-    "ai",
+    "slides",
+    "presentation",
+    "skill",
     "agent",
-    "slides"
+    "claude-code"
   ],
   "license": "MIT",
   "type": "commonjs",

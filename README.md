@@ -1,102 +1,101 @@
 # 卷王PPT (KingPPT)
 
-本地运行的 AI PPT 生成工具：在网页上对话生成大纲与幻灯片，实时预览，一键导出**可编辑的 .pptx**。别人熬夜做的，没你十分钟做的好。
+**Agent 驱动的 PPT 生成 Skill**：任何 Agent（Claude Code 等）都能调用，起一个网页让人类挑模板、实时预览、就地编辑，导出**可编辑的 .pptx**。别人熬夜做的，没你十分钟做的好。
 
-## 快速开始
+> **控制反转**：本项目**不含大模型**。今天不再是「服务器调 LLM 填引擎」，而是「**用户的 Agent 当内容源 + 编排者**」——Agent 写幻灯片 JSON，本 Skill 是确定性的排版引擎 + 网页工作台。引擎保证**预览 == 导出**。
+
+## 作为 Skill 使用（推荐）
+
+Agent 读 [`SKILL.md`](./SKILL.md) 即得完整创作契约与协作协议。核心闭环：
+
+```
+  用户 Agent ──push deck/slide──▶ 中继服务器 ──SSE──▶ 人类浏览器（实时预览）
+       ▲                            (relay)                │
+       └──────── next 长轮询 ◀──── 动作队列 ◀──── 挑模板 / 就地编辑 / 下指令
+```
+
+Agent 与人类**回合制**协作：Agent 先 push（人类立刻有东西看）→ 再 `next` 让位收人类动作 → 据动作重写 → 再 push，直到人类导出。这个「人类在环」的乒乓取代了任何自愈生成循环。
 
 ```bash
 npm install
-npm start    # 启动并自动打开浏览器，默认 http://localhost:3210
+node bin/cli.js serve         # 后台任务方式起服务 + 开浏览器（默认 http://localhost:3210）
 ```
 
-首次使用点击右上角 **⚙ 模型设置**，为「文本对话」选择供应商并填入 API Key 即可（也可继续使用环境变量方式，见下）。
+## CLI（Agent 的 shell-out 接口）
 
-自定义端口：`npm start -- --port=4000`
+所有命令输出 JSON；经 `KING_PPT_HOME/server.json` 自动定位运行中的服务（或 `--port=N` / `KING_PPT_PORT`）。
 
-## 使用流程
+| 命令 | 用途 |
+| --- | --- |
+| `serve [--port=N] [--no-open]` | 起工作台 + 开浏览器（**以后台任务运行**） |
+| `stop` | 停止服务 |
+| `templates` | 列出模板 |
+| `spec <templateId>` | 某模板的创作规格（画布/字数约束/配色/free-SVG 规范/版式契约文本） |
+| `push [deck.json]` | 推整册 `{title, templateId, slides[]}`（文件或 stdin）→ 浏览器实时预览 |
+| `push-slide <index> [slide.json]` | 推单页（逐页流式体验） |
+| `next [--timeout=ms]` | 长轮询下一个人类动作（阻塞；~25s 心跳） |
+| `state` | 当前 deck 快照（重连/导出用） |
+| `asset --file= \| --data= \| --url=` | 供图，返回 `slide.image` 载荷 |
+| `export <out.pptx>` | 导出当前 deck 为 .pptx |
 
-1. 在左侧输入主题（可粘贴材料），选择页数，发送
-2. 查看/重新生成大纲，满意后点「确认大纲，生成幻灯片」
-3. 右侧 16:9 预览区逐页流式出现幻灯片
-4. 继续输入自然语言修改指令（如「把第 3 页要点精简一半」）
-5. 点击右上角「导出 PPTX」下载文件，可在 PowerPoint / WPS 中继续编辑
+`next` 返回的人类动作：`generate`（生成整册）、`revise`（自然语言指令）、`edit`（就地编辑，服务器已权威落盘）、`regen`（重写某页）、`template-pick`（换模板）、`heartbeat`（超时空转，再 `next`）。详见 `SKILL.md`。
 
-## LLM Provider 架构
+## 人类在浏览器上的使用流程
 
-模型接入按**能力**组织（`src/llmprovider.js`），每种能力可独立绑定不同的「供应商实例 · 模型」：
+1. 挑选模板风格（画廊卡片实时预览）
+2. 看 Agent 逐页推来的幻灯片在 16:9 预览区实时出现
+3. 就地点选文字修改；或在输入框对 Agent 下自然语言指令
+4. 满意后点「导出 PPTX」，可在 PowerPoint / WPS 继续编辑
+5. 也可上传一份 .pptx，系统提取为可复用模板
 
-| 能力 | 说明 | 状态 |
-| --- | --- | --- |
-| `chat` | 文本对话（大纲/幻灯片/修改） | ✅ 已实装 |
-| `vision` | 多模态识图（看图生成 PPT） | ✅ 已实装（未配置时回退 chat 绑定） |
-| `image` | 图像生成 | ✅ 已实装（OpenAI 兼容 `/images/generations`） |
-| `video` | 视频生成 | 🔌 接口预留（异步任务轮询抽象 `runTask`） |
-| `music` | 音乐生成 | 🔌 接口预留（异步任务轮询抽象 `runTask`） |
+## 模板系统（确定性引擎 —— 零 LLM 耦合）
 
-### 供应商实例 × 模型列表
+生成逻辑由**模板描述符**驱动：每个模板一份 `template.json`，声明画布、角色化色板、字体档位、装饰构件、页面家族（family + variant）、组件、类型映射与字数约束。描述符 + 内容经 **Layout Resolver** 解析为 **Resolved Scene Graph**（与模板无关的最终场景），后端导出（pptxgenjs）与前端预览（DOM）只是两个「画家」，从机制上保证**预览 = 导出**。
 
-- 供应商是**可添加多个的实例**：内置模板（OpenAI、Kimi、DeepSeek、智谱、通义、豆包、Gemini、Ollama）一键创建，中转站/私有网关用「自定义」填名称 + 地址 + Key
-- 每个实例维护自己的**模型列表**：手动添加、或从 `/models` 接口一键拉取；每个模型用图标标记能力（👁 多模态 / 🖼 生图）
-- 不同供应商的同名模型不会混淆：所有展示位统一 `供应商名 · 模型名`
-- 实例可启停、可测试连接；删除实例会级联清理其默认绑定
-
-配置保存在本机 `~/.king-ppt/config.json`（API Key 不会回传给前端，也不入库）。
-
-### 扩展新能力/供应商
-
-- 新增 OpenAI 兼容模板：在 `PROVIDER_TEMPLATES` 加一条记录即可。
-- 实装视频/音乐生成：在对应适配器实现 `generateVideo(ctx, prompt, opts)` / `generateMusic(ctx, prompt, opts)`；异步任务可复用 `runTask({ submit, poll, isDone, extract })` 轮询器。
-
-## 模板系统
-
-生成逻辑由**模板描述符（template descriptor）**驱动：每个模板一份 `template.json`，声明画布、角色化色板、字体档位、装饰构件、页面家族（family + variant）、组件、类型映射与字数约束。描述符 + 内容经 Layout Resolver 解析为 **Resolved Scene Graph**（与模板无关的最终场景），后端导出（pptxgenjs）与前端预览（DOM）只是两个"画家"，从机制上保证预览 = 导出。
-
-- 详细设计见 `docs/template-system-design.md`
+- 详细设计见 [`docs/template-system-design.md`](./docs/template-system-design.md)
 - **预设模板**：`classic-blue`（经典蓝）、`warm-retro`（复古蓝米，插画素材仅供本机使用，不可再分发）
-- **上传模板**：在模板画廊点「+ 上传模板」选一份 .pptx，系统自动提取主题色、字体、字号档位、背景插画、页脚等，生成描述符草稿；确认面板展示样例预览与低置信度项，保存后即可用于生成
-- 预设模板在 `templates/<id>/`，上传模板存 `~/.king-ppt/templates/<id>/`（含 `source.pptx` 原件，供重新提取）
-- LLM 只输出结构化 JSON（8 种内容类型不变），模板差异全部由渲染层吸收
+- **上传模板**：浏览器里选一份 .pptx，系统自动提取主题色、字体、字号档位、背景插画、页脚等生成描述符草稿；确认后即可用于生成
+- 预设模板在 `templates/<id>/`，上传模板存 `KING_PPT_HOME/templates/<id>/`（含 `source.pptx` 原件，供重新提取）
+- Agent 只输出结构化 JSON（8 种内容类型），模板差异全部由渲染层吸收
 
-### 自由排版页（free）
+### 8 类结构化版式 + 自由排版页
 
-除 8 种结构化类型外，LLM 每页还可以选择输出第 9 类 `"free"`：直接产出固定 1280×720 画布的 HTML 片段，用于核心卖点、重磅数字等重点页的视觉发挥（每份演示硬性要求 1~3 页，harness 会指定内容页正中一页作为重点展示页）。大风格一致性由 prompt 注入的模板风格令牌（色板/字体/基调）保证。
-
-- **预览**：sandbox iframe + 文档级 zoom 等比缩放（`public/html-frame.js`，字符串级 sanitize 剔除脚本/外链）
-- **导出**：本机 Chrome/Edge headless 截图成 2x PNG，整页图片嵌入 PPTX（**该页不可编辑**，结构化页保持矢量可编辑）；未检测到浏览器时设置 `KING_PPT_CHROME` 指向可执行文件
-- `html-frame.js` 的 `sanitize/wrap` 前后端共用，保证预览 = 导出
-- free 页不经 Layout Resolver；html 缺失/损坏时走「反馈重试 → 结构化兜底页」自愈阶梯
-
-## 原理
-
-- LLM 只输出结构化 JSON（大纲 / 幻灯片 schema），不直接排版
-- 版式收敛为 8 种固定组件：`title`（封面）、`section`（章节页）、`bullets`（要点页）、`twoColumn`（两栏对比）、`table`（数据表格）、`steps`（流程步骤）、`quote`（金句页）、`stats`（关键数字）
-- 前端将场景图渲染为 HTML 预览；后端用 PptxGenJS 将同一份场景图转成 .pptx
+- 版式收敛为 8 种固定类型：`title`（封面）、`section`（章节页）、`bullets`（要点页）、`twoColumn`（两栏对比）、`table`（数据表格）、`steps`（流程步骤）、`quote`（金句页）、`stats`（关键数字）
+- **位置契约**：第 1 页必为 `title`，末页必为 `section`
+- 第 9 类 `"free"` 自由排版页：Agent 直接产出 1280×720 的 **SVG**，导出为**原生可编辑矢量**（无需 Chrome）。用于核心卖点/重磅数字等重点页，每份 1~3 页。风格一致性由 `spec` 返回的模板色板约束。
+  - 预览：`public/svg-frame.js`；导出：`src/svg-to-pptx.js`（同源规范，保证预览 = 导出）
+  - 旧的 `{type:"free", html}`（原始 HTML）路径仍在，但导出需本机 Chrome/Edge 栅格化（设 `KING_PPT_CHROME` 指向可执行文件）；**优先用 `svg`**
 
 ## 目录结构
 
 ```
-bin/cli.js         # 启动入口：拉起服务 + 自动开浏览器
-src/server.js      # Express 路由（/api/outline、/api/slides(SSE)、/api/revise、/api/export、/api/templates(+extract)、/api/providers、/api/instances、/api/active）
-src/agent.js       # Prompt 与 JSON 解析（大纲 / 单页 / 局部修改，注入模板字数约束）
-src/descriptor.js  # 模板描述符加载与枚举（templates/ + ~/.king-ppt/templates/，schemaVersion 校验）
+SKILL.md               # Agent 创作契约 + 协作协议（Skill 入口）
+bin/cli.js             # CLI 分发器：serve/stop/templates/spec/push/push-slide/next/state/asset/export
+src/server.js          # 中继服务器：deck 存储 + SSE 事件总线 + 动作队列 + 保留路由
+src/relay.js           # Agent ↔ 浏览器 有状态中继（单页粒度写入 + 单调 version）
+src/normalize.js       # 幻灯片 JSON 归一（从旧 agent.js 迁出的纯函数，无 LLM、无重试循环）
+src/spec.js            # 模板创作规格（/spec 路由 + 写进 SKILL.md 的契约文本）
+src/paths.js           # 可移植数据根目录（KING_PPT_HOME，默认 ~/.king-ppt）
+src/descriptor.js      # 模板描述符加载与枚举（templates/ + KING_PPT_HOME/templates/）
 src/layout-resolver.js # 描述符 + 内容 → Resolved Scene Graph（唯一设计决策者）
-src/pptx-painter.js    # Scene Graph → pptxgenjs（纯绘制；free 页整页图片满铺）
-src/pptx.js        # buildPptx 薄入口（free 页经 renderFree 钩子栅格化）
-src/html-shot.js   # free 页 HTML → PNG（本机 Chrome/Edge headless 截图）
-src/extract.js     # 上传 pptx → 描述符草稿（Stage 0 对象图 + 三层提取 + 安全限制）
-src/llm.js         # 薄封装：保持旧接口，内部走 llmprovider
-src/llmprovider.js # 多供应商抽象：实例/模型管理、能力路由、OpenAI 兼容 / Gemini 适配器、异步任务轮询器
-src/config.js      # 配置持久化（~/.king-ppt/config.json）
-templates/         # 预设模板（template.json + assets/）
-public/            # 前端单页 + dom-painter.js + html-frame.js（无构建步骤）
-docs/              # 设计文档
+src/pptx-painter.js    # Scene Graph → pptxgenjs（纯绘制）
+src/svg-to-pptx.js     # free 页 SVG → 原生可编辑 pptx 形状
+src/pptx.js            # buildPptx 薄入口
+src/html-shot.js       # 旧版 free HTML → PNG（本机 Chrome/Edge headless，跨平台探测）
+src/extract.js         # 上传 pptx → 描述符草稿
+src/sessions.js/assets.js # 会话持久化 / 配图存储（均落 KING_PPT_HOME）
+templates/             # 预设模板（template.json + assets/）
+public/                # 前端单页 + dom-painter/svg-frame/html-frame（无构建步骤）
+docs/                  # 设计文档
 ```
 
-## 环境变量（向后兼容，可选）
+## 环境变量
 
 | 变量 | 必填 | 默认 | 说明 |
 | --- | --- | --- | --- |
-| `OPENAI_API_KEY` | 否 | — | 未在页面配置时的 chat 兜底 key |
-| `OPENAI_BASE_URL` | 否 | `https://api.openai.com/v1` | chat 兜底端点 |
-| `OPENAI_MODEL` | 否 | `gpt-4o-mini` | chat 兜底模型 |
+| `KING_PPT_HOME` | 否 | `~/.king-ppt` | 数据根目录（会话/配图/上传模板/运行时文件）。Skill 场景可指向工作区。 |
 | `PORT` | 否 | `3210` | 服务端口 |
+| `KING_PPT_PORT` | 否 | — | CLI 定位服务端口的覆盖项 |
+| `KING_PPT_CHROME` | 否 | — | 旧版 free-HTML 页导出所需的 Chrome/Edge 可执行文件路径 |
+
+要求 Node ≥ 18（使用全局 `fetch`）。

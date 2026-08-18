@@ -3,10 +3,8 @@
 // 避免 SSE 逐页保存时反复重写整库。列表由目录扫描派生，模块级 Map 缓存避免重复解析。
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
 const crypto = require('crypto');
-
-const SESSIONS_DIR = path.join(os.homedir(), '.king-ppt', 'sessions');
+const { SESSIONS_DIR } = require('./paths');
 const ID_RE = /^s_[a-f0-9]{16}$/;
 
 const cache = new Map(); // id → 完整会话对象

@@ -9,7 +9,7 @@
 </head>
 <body>
   <div id="app-shell">
-    <!-- ============ 侧边栏：品牌 / 新建会话 / 会话历史 / 设置 ============ -->
+    <!-- ============ 侧边栏：品牌 / 新建会话 / 会话历史 ============ -->
     <aside id="sidebar">
       <div class="sidebar-brand">
         <span class="brand-logo">卷</span>
@@ -23,12 +23,6 @@
         <div class="sidebar-label">对话</div>
         <div id="session-list"></div>
         <div id="session-empty" class="session-empty">还没有会话，输入主题开始创作</div>
-      </div>
-      <div class="sidebar-foot">
-        <button id="settings-btn" class="sidebar-foot-btn" title="模型设置">
-          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-        <span>模型设置</span>
-        </button>
       </div>
     </aside>
 
@@ -51,10 +45,6 @@
                 上传
               </button>
               <span class="spacer"></span>
-              <button type="button" id="home-model-chip" class="model-chip" title="点击打开模型设置">
-                <span class="chip-dot"></span>
-                <span class="model-info">加载中…</span>
-              </button>
               <label class="pages-label" title="页数">
                 <input id="home-pages" type="number" min="4" max="20" value="8" /> 页
               </label>
@@ -74,10 +64,6 @@
         <header>
           <div class="work-title" id="work-title"></div>
           <div class="header-right">
-            <button id="model-chip" class="model-chip" title="点击打开模型设置">
-              <span class="chip-dot"></span>
-              <span class="model-info">加载中…</span>
-            </button>
             <button id="export-btn" class="btn btn-primary" disabled>
               <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
               导出 PPTX
@@ -140,28 +126,6 @@
       </div>
     </div>
   </div>
-
-  <!-- 模型设置面板 -->
-  <dialog id="settings-dialog">
-    <div class="settings-wrap">
-      <aside class="settings-nav">
-        <div class="settings-nav-title">模型设置</div>
-        <div id="settings-nav-items"></div>
-        <div class="settings-nav-foot">
-          API Key 仅保存在本机<br />配置自动保存
-        </div>
-      </aside>
-      <div class="settings-main">
-        <div class="settings-main-header">
-          <h3 id="settings-title">模型设置</h3>
-          <button id="settings-close" class="btn btn-icon" title="关闭">
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-          </button>
-        </div>
-        <div id="settings-body"></div>
-      </div>
-    </div>
-  </dialog>
 
   <div id="toasts"></div>
 

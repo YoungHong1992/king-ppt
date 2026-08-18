@@ -1,10 +1,10 @@
-// 模板描述符加载与枚举：项目 templates/（预设）+ ~/.king-ppt/templates/（用户上传）
+// 模板描述符加载与枚举：项目 templates/（预设）+ KING_PPT_HOME/templates/（用户上传）
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
+const { TEMPLATES_DIR } = require('./paths');
 
 const PRESET_DIR = path.join(__dirname, '..', 'templates');
-const USER_DIR = path.join(os.homedir(), '.king-ppt', 'templates');
+const USER_DIR = TEMPLATES_DIR;
 const SUPPORTED_SCHEMA_MAJOR = 1; // schemaVersion "1.x" 均兼容
 const DEFAULT_TEMPLATE = 'classic-blue';
 
