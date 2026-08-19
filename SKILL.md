@@ -4,44 +4,46 @@ description: >-
   卷王PPT — generate editable .pptx presentations through a live web studio that
   YOU (the calling Agent) drive. Use this skill whenever the user wants to create,
   design, or export a PowerPoint / slide deck / 演示文稿 / PPT, especially when they
-  want to pick a template on a webpage, preview slides live, or iterate on a deck
-  interactively. You are the content brain; this skill is the deterministic layout
-  engine + browser studio. It never calls an LLM itself — you write the slide JSON.
+  want to pick a theme on a webpage, preview slides live, or iterate on a deck
+  interactively. You are the content brain and the designer; this skill is the
+  SVG-as-IR compiler + browser studio. It never calls an LLM itself — you author
+  every slide as one full-page SVG.
 ---
 
-# 卷王PPT · Agent-driven PPT studio
+# 卷王PPT · Agent-driven SVG PPT studio
 
-You are the content brain. This skill is a **deterministic layout engine** (`slide JSON → resolved scene graph → .pptx`) wrapped in a **web studio** that the human watches and edits in real time. There is **no built-in LLM** — *you* author every slide's JSON. The skill guarantees **preview == export**: what the human sees in the browser is exactly what lands in the `.pptx`.
+You are the **content brain and the designer**. This skill is an **SVG-as-IR compiler** (`one full-page SVG per slide → native editable .pptx`) wrapped in a **web studio** the human watches and edits in real time. There is **no built-in LLM** — *you* author every slide. The skill guarantees **preview == export**: the browser and the `.pptx` consume the *same* sanitized SVG, so what the human sees is exactly what lands in the file.
 
-Your job: start the studio, generate slide JSON that obeys the contract below, push it (the human sees it instantly), then **collaborate** — block on human actions, react, re-push, until they export.
+**The medium is SVG.** Every slide is one `<svg viewBox="0 0 1280 720">` that you compose. There are no fixed slide "types" and no per-field char limits anymore — you lay out the whole page yourself, using the chosen **theme's design tokens** (palette, type scale, geometry) to stay consistent. The compiler turns your `<rect>/<text>/<path>/…` into native, editable PowerPoint shapes — no Chrome, no rasterization.
+
+Your job: start the studio → pick a theme and read its **spec** (tokens + role prototypes + rules) → author the deck as SVG and push it (the human sees it instantly) → **collaborate** (block on human actions, react, re-push) until they export.
 
 ---
 
 ## How it works (control flow)
 
 ```
-  YOU (Agent) ──push deck/slide──▶ studio server ──SSE──▶ human's browser (live preview)
-       ▲                              (relay)                    │
-       └──────── next (long-poll) ◀── action queue ◀──── picks template / edits / instructs
+  YOU (Agent) ──push deck/slide (SVG)──▶ studio server ──SSE──▶ human's browser (live inline SVG)
+       ▲                                  (relay)                    │
+       └──────── next (long-poll) ◀────── action queue ◀──── picks theme / edits text / annotates
 ```
 
-You and the human take turns. **You always push first** (so the human has something to look at), then you call `next` to hand control over and wait for what they do. This turn-based loop replaces any self-healing generation loop — the human is in the loop instead.
+You and the human take turns. **You always push first** (so the human has something to look at), then call `next` to hand control over and wait. This turn-based loop replaces any self-healing generation loop — the human is in the loop instead.
 
 ---
 
 ## Setup — start the studio (once per session)
 
-Run the server as a **background task** and leave it running. It prints a JSON line with the URL, opens the human's browser, then blocks.
+Run the server as a **background task** and leave it running. It prints a JSON line with the URL, opens the browser, then blocks.
 
 ```bash
 # from the skill directory; runs in background, opens browser
 node bin/cli.js serve
 ```
 
-- The server picks port `3210` by default (override with `--port=N` or `PORT`).
-- All other commands auto-locate it via `KING_PPT_HOME/server.json`. In a headless env or when you don't want a browser popup, add `--no-open`.
-- **Data location:** set `KING_PPT_HOME` to keep sessions/assets/uploaded templates with the project (defaults to `~/.king-ppt`). e.g. `KING_PPT_HOME=./.king-ppt node bin/cli.js serve`.
-- Node ≥ 18 required (uses global `fetch`). Run `npm install` first if `node_modules` is absent.
+- Default port `3210` (override with `--port=N` or `PORT`). Other commands auto-locate it via `KING_PPT_HOME/server.json`. Headless? add `--no-open`.
+- **Data location:** set `KING_PPT_HOME` to keep sessions/assets/uploaded themes with the project (defaults to `~/.king-ppt`), e.g. `KING_PPT_HOME=./.king-ppt node bin/cli.js serve`.
+- Node ≥ 18 (uses global `fetch`). Run `npm install` first if `node_modules` is absent. The browser UI is a prebuilt Vite/React bundle in `public/` — no build step needed to run; rebuild with `npm run build` only if you change `web/`.
 
 When done: `node bin/cli.js stop`.
 
@@ -49,17 +51,17 @@ When done: `node bin/cli.js stop`.
 
 ## The collaboration loop (the core protocol)
 
-1. **List templates**, optionally let the human pick first:
-   `node bin/cli.js templates` → `{ templates: [{id, name, source}] }`
-2. **Fetch the spec** for the chosen template — it gives you the exact char limits, palette, and free-SVG rules **for that template**:
-   `node bin/cli.js spec <templateId>`
-3. **Generate** the full deck as slide JSON (following the contract below) and **push** it:
+1. **List themes**, optionally let the human pick first:
+   `node bin/cli.js templates` → `{ templates: [{id, name, source, palette}] }`
+2. **Fetch the spec** for the chosen theme — it returns that theme's **design tokens**, four **role prototype pages** (ready-to-edit SVG skeletons), and the **SVG authoring rules**:
+   `node bin/cli.js spec <themeId>`
+3. **Author** the whole deck as SVG (following the contract below) and **push** it:
    `node bin/cli.js push deck.json` — the human sees all pages instantly.
    *(Or stream page-by-page with `push-slide <index> slide.json` for a live typewriter feel.)*
 4. **Hand over** — block for the next human action:
    `node bin/cli.js next` — returns one action (or a `heartbeat` after ~25s).
 5. **React** to the action (table below), re-push the affected page(s) or deck, then `next` again.
-6. Loop 4–5 until the human is satisfied. They export from the browser button, **or** you export on request: `node bin/cli.js export out.pptx`.
+6. Loop 4–5 until satisfied. They export from the browser button, **or** you export on request: `node bin/cli.js export out.pptx`.
 
 ### Reacting to `next` actions
 
@@ -67,72 +69,60 @@ When done: `node bin/cli.js stop`.
 
 | action | payload | what the human did → what you do |
 |---|---|---|
-| `generate` | `{topic, pages, templateId}` | Asked to (re)generate. **Author the whole deck** for `topic`/`pages` on `templateId`, then `push`. |
-| `revise` | `{instruction, templateId}` | Typed a natural-language change ("把第3页精简一半"). Apply it to the relevant page(s), re-`push` or `push-slide`. |
-| `edit` | `{index, slide}` | Edited text in-place on page `index`. The server **already applied** it authoritatively — `slide` is their new content. Just absorb it into your working copy; only re-push if you further change it. |
-| `regen` | `{index, feedback?}` | Wants page `index` rewritten. `feedback` may list quality warnings. Rewrite that page, `push-slide index`. |
-| `template-pick` | `{templateId}` | Switched template. The server re-resolved existing pages locally; **re-fetch `spec`** for the new template and keep new content within its limits. |
-| `heartbeat` | `{version}` | ~25s passed with no action. Just call `next` again (or do other work). Keeps you from hanging forever. |
+| `generate` | `{topic, pages, themeId}` | Asked to (re)generate. **Author the whole deck as SVG** for `topic`/`pages` on `themeId`, then `push`. |
+| `annotate` | `{instruction, index?, themeId}` | Typed a natural-language change ("把第3页的图表改成对比两年数据"). If `index` is set it targets that page; else the whole deck. Redraw the affected SVG(s), re-`push`/`push-slide`. |
+| `edit` | `{index, slide}` | Edited text **in-place** on page `index`. The server **already applied** it authoritatively (re-sanitized SVG in `slide.svg`) — just absorb it into your working copy; only re-push if you further change it. |
+| `regen` | `{index, feedback?}` | Wants page `index` redrawn. Re-author that page's SVG, `push-slide index`. |
+| `theme-pick` | `{themeId}` | Switched theme. **Re-fetch `spec`** for the new theme and redraw pages using the new tokens (colors/scale/geometry change; your SVG structure can stay). |
+| `heartbeat` | `{version}` | ~25s passed with no action. Just call `next` again (or do other work). |
 
-**No deadlock:** you push before you wait, so the human always has content to act on; the queue delivers their action the instant it arrives, else `next` returns a heartbeat. Never block on `next` before your first push.
+**No deadlock:** you push before you wait, so the human always has content to act on; the queue delivers their action instantly, else `next` returns a heartbeat. Never block on `next` before your first push.
 
-**Concurrency:** writes are single-page-granular with a monotonic `version`. Your `push-slide` and the human's `edit` can't clobber each other. If a `next`/state `version` is older than one you've already seen, ignore stale content.
-
----
-
-## Slide contract (author JSON to match this exactly)
-
-A deck is `{ title, templateId, slides: [...] }`. Every slide has a `type` and its fields. **`spec <id>` returns the authoritative limits for the chosen template** — the values below are the defaults.
-
-### Types (the `type` field must be one of these)
-
-- `"title"` — cover. `{ title, subtitle }`
-- `"section"` — section divider. `{ title, subtitle? }`
-- `"bullets"` — bullet page. `{ title, bullets: string[] }` (3–6 items, each ≤ 40 chars)
-- `"twoColumn"` — two-column compare. `{ title, leftTitle, leftBullets: string[], rightTitle, rightBullets: string[] }`
-- `"table"` — data table. `{ title, headers: string[], rows: string[][] }` (3–5 cols, 2–6 rows, cell ≤ 20 chars)
-- `"steps"` — process. `{ title, steps: [{title, desc}] }` (3–5 steps, title ≤ 10, desc ≤ 30 chars)
-- `"quote"` — pull quote. `{ quote, author? }` (one punchy line ≤ 50 chars)
-- `"stats"` — key numbers. `{ title, stats: [{value, label}] }` (2–4 numbers, `value` bold like `"87%"`, `label` ≤ 12 chars)
-- `"free"` — free-form page. `{ title, svg }` — design the whole page in SVG (see rules below). **Use 1–3 per deck** for your highest-impact pages (key selling point, hero number, creative visual) so the deck isn't monotonous.
-
-### Optional enrichment fields (include if useful, omit otherwise)
-
-- `eyebrow` — kicker on cover/section (≤ 12 chars, e.g. `"AI 提效 · 实践"`)
-- `conclusion` — bottom summary bar on a content page (one line ≤ 50 chars); optional companion `note` (≤ 50 chars)
-- `author` — cover byline
-- `image` — picture payload, **only on `bullets` pages**: first upload via `asset` to get `{file, path, url}`, attach the whole object as `slide.image`; the `imageRight` variant auto-uses it.
-
-### Type selection guidance
-
-Structured data / multi-dimension compare → `table`. Sequential content → `steps`. Emphasize one line → `quote`. Eye-catching number → `stats`. Core selling point / big number / creative showcase → `free` (1–3 per deck for visual punch). Everything else narrative → `bullets` or `twoColumn`.
-
-### Position contract (mandatory)
-
-- **Page 1 must be `title`.**
-- **Last page must be `section`** (a thank-you / closing page).
-
-Structured pages are auto-nudged into place, but author with this in mind. `free` pages are exempt (a `free` hero cover stays put).
-
-### Char limits (defaults; `spec` returns the real numbers per template)
-
-Title ≤ 20 · bullet ≤ 40 · column/step title ≤ 10 · table cell ≤ 20 · step desc ≤ 30 · quote ≤ 50 · conclusion ≤ 50. Overflows come back as `warnings` on the push response — tighten and re-push.
+**Concurrency:** writes are single-page-granular with a monotonic `version`. Your `push-slide` and the human's `edit` can't clobber each other. If a `next`/state `version` is older than one you've seen, ignore stale content.
 
 ---
 
-## Free SVG pages (`type: "free"`)
+## Slide contract (the medium is SVG)
 
-The `svg` string is rendered natively into the .pptx as **editable vector shapes** (no rasterization, no Chrome needed). Rules — `spec` returns the exact palette per template:
+A deck is `{ title, themeId, slides: [ … ] }`. **Every slide is one full-page SVG.** Each entry may be either a bare SVG string or an object:
 
-- Output one complete SVG: root `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720">`. Only the SVG itself. Escape inner quotes as `\"`.
-- **Allowed elements only:** `<rect> <circle> <ellipse> <line> <text> <g>` (`<g>` only for `transform="translate(x,y)"`).
-- **Only the template palette colors** (from `spec.freeStyle.colors`); you may add `fill-opacity`/`stroke-opacity` for depth.
-- `<text>` must carry `x`, `y`, `font-size`, `fill`; align via `text-anchor="start|middle|end"`; **line breaks = multiple `<text>` elements**, never `<tspan>`.
-- **Forbidden:** `<script>`, event attributes, any external resource (href/images/fonts), `<defs>`, gradients, filters, mask, clip-path, CSS animation.
-- **Layout self-check:** decorative blocks must not cover text (put text elements last); keep text ≥ 40px from edges; font-size ≥ 16.
-- Encouraged: bold block contrast, circle/line geometry, translucent overlays, oversized numbers, generous aligned whitespace.
+```json
+{ "svg": "<svg …>…</svg>", "role": "content", "title": "页面标题" }
+```
 
-> A legacy `{type:"free", html}` (raw HTML) path also exists but requires a local Chrome/Chromium/Edge for export rasterization. **Prefer `svg`** — it's editable and dependency-free. (Set `KING_PPT_CHROME` if you must use HTML and Chrome isn't auto-found.)
+- `svg` — **required**, one complete `<svg viewBox="0 0 1280 720">…</svg>` (see rules below).
+- `role` — optional hint (`cover` · `section` · `content` · `closing`), used for the page-rail label and to pick a starting prototype. If omitted, the server infers: page 1 → `cover`, last → `closing`, else `content`.
+- `title` — optional plain-text page title (for thumbnails/outline); does not affect rendering.
+
+There are **no other fields, no `type`, no char limits.** You own the whole page. (`themeId` may also be sent as `templateId` — both accepted.)
+
+### Page roles (layout intent, not hard fields)
+
+- **`cover`** — page 1. Oversized headline + eyebrow + subtitle/byline; one visual anchor, lots of color or whitespace.
+- **`section`** — divider. Dark ground + huge section number (01/02) + section name; minimal, a breath between chapters.
+- **`content`** — the workhorse. Page title + accent underline + 2–5 points/cards/stats; strict alignment, generous whitespace.
+- **`closing`** — last page. Thanks / call-to-action; one calm centered line.
+
+`spec <themeId>` returns a **ready-made SVG prototype for each role** in the theme's colors — start from the closest one, swap the text/data, then add or remove elements for your content.
+
+### Design with the theme's tokens
+
+`spec` returns `tokens`: **`color`** (palette roles like `primary`/`accent`/`text`/`bg`), **`scale`** (a type-size ramp: `display`/`sectionTitle`/`pageTitle`/`body`/`caption`/…), **`font`** (title & body stacks), and **`geometry`** (corner radius, hairline, margin). Use *only* these palette colors and pick `font-size` from the scale so the whole deck stays coherent. The theme carries the design; you carry the content and composition.
+
+---
+
+## SVG authoring rules (what the compiler & sanitizer accept)
+
+`spec.authoringText` returns the exact rules; the essentials:
+
+- **Root:** `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720">…</svg>`. Canvas is always 1280×720. Output only the SVG. When pushing as JSON, escape inner quotes as `\"`.
+- **Allowed elements:** `<rect> <circle> <ellipse> <line> <polyline> <polygon> <path> <text> <g> <image>`. `<g>` only for `transform="translate/rotate/scale"`. `<path>` uses standard `d` commands (M/L/H/V/C/S/Q/T/A/Z, abs or rel) → compiled to native editable custom geometry.
+- **`<text>`** must carry `x`, `y`, `font-size`, `fill`; align via `text-anchor="start|middle|end"`; **line breaks = multiple `<text>` elements, never `<tspan>`** (tspan positioning isn't guaranteed on export).
+- **`<image>`** — inline `data:` URI only (`href="data:image/…;base64,…"`). Upload first via `asset` to get base64, then inline it. External image URLs are stripped.
+- **Forbidden (stripped by the sanitizer, so don't rely on them):** `<script>`, `on*` handlers, `javascript:` · `<defs>`, gradients (`linear/radialGradient`), `<filter>`, `<mask>`, `<clipPath>`, `<pattern>`, `<use>`, `<symbol>` · `<style>`, CSS animation, `<animate*>`, external fonts/resources. **Gradients and filters are forbidden by design** — pptxgenjs can't reproduce them, so allowing them would break preview==export. For depth, layer **solid colors with `fill-opacity`** instead.
+- **Layout self-check:** put decorative shapes first and **text last** (so nothing covers it); keep text ≥ `margin` from the edges; body `font-size` ≥ the `caption` step; align same-kind elements to shared baselines; one idea per page — prefer whitespace over clutter.
+
+Spend your design effort where it matters: hero pages (key selling point, big number, creative visual) deserve bespoke layouts; narrative pages should stay regular and consistent.
 
 ---
 
@@ -144,16 +134,16 @@ All commands print JSON to stdout; errors go to stderr with a non-zero exit. The
 |---|---|
 | `serve [--port=N] [--no-open]` | Start studio + open browser. **Run as a background task.** |
 | `stop` | Stop the running server. |
-| `templates` | List available templates. |
-| `spec <templateId>` | Authoring spec for a template: canvas, char limits, palette, free-SVG rules, type contract text. |
-| `push [deck.json]` | Push a whole deck `{title, templateId, slides[]}` (file arg or stdin). Returns `{scenes, warnings, version}`. |
-| `push-slide <index> [slide.json]` | Push one page (streaming feel). File/stdin. |
+| `templates` | List available themes `{id, name, source, palette}`. |
+| `spec <themeId>` | Authoring spec: design tokens, 4 role prototype SVGs, SVG rules. |
+| `push [deck.json]` | Push a whole deck `{title, themeId, slides:[{svg,role?,title?}]}` (file or stdin). Returns `{themeId, canvas, slides, recovered, version}`. |
+| `push-slide <index> [slide.json]` | Push one page `{svg}` (streaming feel). File/stdin. |
 | `next [--timeout=ms]` | Long-poll the next human action (blocks; ~25s heartbeat). |
 | `state` | Full current deck snapshot (for reconnect/export). |
-| `asset --file=<img> \| --data=<base64> \| --url=<url>` | Store an image, returns the `slide.image` payload. |
+| `asset --file=<img> \| --data=<base64> \| --url=<url>` | Store an image; returns a payload you can inline as a `data:` URI. |
 | `export <out.pptx>` | Export the current deck to a `.pptx` file. |
 
-Pipe JSON via stdin instead of a file, e.g.: `echo '{"title":"…","templateId":"classic-blue","slides":[…]}' | node bin/cli.js push`.
+Pipe JSON via stdin instead of a file, e.g.: `echo '{"title":"…","themeId":"classic-blue","slides":[…]}' | node bin/cli.js push`.
 
 ---
 
@@ -163,27 +153,27 @@ Pipe JSON via stdin instead of a file, e.g.: `echo '{"title":"…","templateId":
 # 1. start studio in the background (browser opens for the human)
 KING_PPT_HOME=./.king-ppt node bin/cli.js serve &
 
-# 2. see templates, read the contract for the one you'll use
+# 2. see themes, read the token spec + role prototypes for the one you'll use
 node bin/cli.js templates
-node bin/cli.js spec classic-blue
+node bin/cli.js spec classic-blue     # → tokens, layouts[cover|section|content|closing].svg, rules
 
-# 3. author a deck (obey the contract) and push it — human sees it live
+# 3. author the deck as full-page SVG (start from the role prototypes) and push it
 cat > /tmp/deck.json <<'JSON'
-{ "title": "时间管理分享", "templateId": "classic-blue", "slides": [
-  {"type":"title","title":"十分钟做完别人熬夜的 PPT","subtitle":"给大学生的时间管理分享"},
-  {"type":"bullets","title":"三个误区","bullets":["把忙碌当高效","不留缓冲时间","从不复盘"]},
-  {"type":"stats","title":"数据说话","stats":[{"value":"2h","label":"日均可回收"},{"value":"87%","label":"效率提升"}]},
-  {"type":"free","title":"核心公式","svg":"<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1280 720\"><rect width=\"1280\" height=\"720\" fill=\"#1F4E79\"/><text x=\"640\" y=\"380\" font-size=\"64\" fill=\"#FFFFFF\" text-anchor=\"middle\">要事 × 专注 = 产出</text></svg>"},
-  {"type":"section","title":"谢谢观看","subtitle":"开始你的第一次复盘"}
+{ "title": "时间管理分享", "themeId": "classic-blue", "slides": [
+  { "role": "cover", "title": "封面",
+    "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1280 720\"><rect width=\"1280\" height=\"720\" fill=\"#FFFFFF\"/><rect x=\"0\" y=\"0\" width=\"14\" height=\"720\" fill=\"#2E86C1\"/><text x=\"80\" y=\"210\" font-size=\"22\" fill=\"#777777\">AI 提效 · 实践</text><text x=\"80\" y=\"350\" font-family=\"'Microsoft YaHei', sans-serif\" font-size=\"96\" fill=\"#1F4E79\">十分钟做完别人熬夜的 PPT</text><text x=\"80\" y=\"420\" font-size=\"44\" fill=\"#333333\">给大学生的时间管理分享</text></svg>" },
+  { "role": "content", "title": "三个误区",
+    "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1280 720\"><rect width=\"1280\" height=\"720\" fill=\"#FFFFFF\"/><text x=\"80\" y=\"150\" font-size=\"44\" fill=\"#1F4E79\">三个误区</text><rect x=\"80\" y=\"180\" width=\"90\" height=\"4\" fill=\"#2E86C1\"/><circle cx=\"90\" cy=\"292\" r=\"6\" fill=\"#2E86C1\"/><text x=\"120\" y=\"300\" font-size=\"26\" fill=\"#333333\">把忙碌当高效</text><circle cx=\"90\" cy=\"382\" r=\"6\" fill=\"#2E86C1\"/><text x=\"120\" y=\"390\" font-size=\"26\" fill=\"#333333\">不给任务留缓冲</text><circle cx=\"90\" cy=\"472\" r=\"6\" fill=\"#2E86C1\"/><text x=\"120\" y=\"480\" font-size=\"26\" fill=\"#333333\">做完从不复盘</text></svg>" },
+  { "role": "closing", "title": "谢谢",
+    "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1280 720\"><rect width=\"1280\" height=\"720\" fill=\"#1F4E79\"/><text x=\"640\" y=\"350\" font-family=\"'Microsoft YaHei', sans-serif\" font-size=\"96\" fill=\"#FFFFFF\" text-anchor=\"middle\">谢谢观看</text><text x=\"640\" y=\"430\" font-size=\"26\" fill=\"#D6E4F0\" text-anchor=\"middle\">开始你的第一次复盘</text></svg>" }
 ] }
 JSON
 node bin/cli.js push /tmp/deck.json
 
 # 4. hand over and react
 node bin/cli.js next        # → e.g. {"action":"regen","payload":{"index":1}}
-#    ...rewrite page 1, then:
-echo '{"type":"bullets","title":"三个误区","bullets":["把忙碌当高效","不给任务留缓冲","做完从不复盘"]}' \
-  | node bin/cli.js push-slide 1
+#    ...redraw page 1's SVG, then:
+node bin/cli.js push-slide 1 /tmp/slide1.json
 node bin/cli.js next        # → loop until they export
 
 # 5. export on request
@@ -194,8 +184,8 @@ node bin/cli.js export ./时间管理分享.pptx
 
 ## Notes & guarantees
 
-- **Preview == export**: the same normalize/resolve path feeds both the browser preview and the `.pptx`. Don't second-guess layout — author content, the engine places it.
-- **Templates carry the design.** You choose colors/positions *only* inside `free` SVG (within the template palette). Structured types are fully themed by the template.
-- **Uploading a template:** the human can drop a `.pptx` in the browser to extract it into a reusable template — it then appears in `templates`. You author against it identically.
-- **Warnings are advisory**, not errors — a deck with warnings still renders/exports. Tighten text to clear them when it matters.
-- Keep your working copy of the deck in sync with `state` after `edit`/`template-pick` actions, since the server may have applied changes authoritatively.
+- **Preview == export.** The browser and the `.pptx` consume the same sanitized SVG. The sanitizer runs on ingress (push/edit), so it strips anything the exporter can't reproduce *before* the human ever sees it — you never preview something that won't export.
+- **You are the designer.** Unlike the old fixed-type engine, there are no auto-placed layouts — compose each page yourself. Lean on the theme tokens and the role prototypes from `spec` so pages stay consistent, then go bespoke on hero pages.
+- **Native, editable output.** `<rect>/<text>/<path>/<image>` become real PowerPoint shapes, text runs, custom-geometry paths, and pictures — fully editable in PowerPoint, no rasterization, no Chrome.
+- **Themes carry the design system.** A theme is a token pack (`theme.json`: palette + type scale + geometry). Uploading a `.pptx` in the browser extracts its palette/fonts into a usable theme that appears in `templates`; you author against it identically.
+- **`recovered` on push** lists page indices whose SVG failed to parse and were replaced with a blank fallback — redraw those. Keep your working copy in sync with `state` after `edit`/`theme-pick`, since the server may have applied changes authoritatively.

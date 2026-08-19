@@ -6,7 +6,10 @@
     "king-ppt": "bin/cli.js"
   },
   "scripts": {
-    "start": "node bin/cli.js serve"
+    "start": "node bin/cli.js serve",
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
   },
   "keywords": [
     "ppt",
@@ -26,6 +29,12 @@
     "express": "^5.2.1",
     "fast-xml-parser": "^5.10.1",
     "jszip": "^3.10.1",
-    "pptxgenjs": "^4.0.1"
+    "pptxgenjs": "^4.0.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.7.0",
+    "vite": "^5.4.21"
   }
 }

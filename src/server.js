@@ -1,11 +1,9 @@
 const path = require('path');
 const fs = require('fs');
 const express = require('express');
-const htmlShot = require('./html-shot');
 const { buildPptx } = require('./pptx');
-const { loadDescriptor, listDescriptors } = require('./descriptor');
-const { resolve } = require('./layout-resolver');
-const { validateSlide } = require('./validate');
+const { loadDescriptor, listDescriptors, loadTheme, loadThemeLayouts } = require('./descriptor');
+const { resolve } = require('./layout-resolver'); // 仅供旧模板画廊 sample/preview 路由；P3 主题系统落地后连同这些路由一并移除
 const assets = require('./assets');
 const { extractFromPptx, saveTemplate } = require('./extract');
 const { parseSourcePages } = require('./pptx-pages');
@@ -46,25 +44,15 @@ function wrap(handler) {
   };
 }
 
-// 单页出口：free 页不走场景图（预览 SvgFrame / 导出 svgToScene）；其余 resolve + 质量校验
-function materialize(slide, d, { title, index, total }) {
-  if (slide.type === 'free') return { slide, scene: null, warnings: [] };
-  const scene = resolve(d, [slide], { title, index, total }).slides[0];
-  const warnings = scene
-    ? validateSlide({ slide, scene, canvas: d.canvas, constraints: d.constraints && d.constraints.chars, index })
-    : [];
-  return { slide, scene, warnings };
-}
-
 // ---------- 模板 ----------
 app.get('/api/templates', (req, res) => {
   res.json({ templates: listDescriptors() });
 });
 
-// 所选模板的创作规格：字数/配色/free-SVG 规范，供用户 Agent 在限制内生成内容
+// 所选主题的创作规格：设计令牌 + 4 个角色原型页 + SVG 创作规则，供用户 Agent 照着画整页 SVG
 app.get('/api/templates/:id/spec', wrap(async (req, res) => {
-  const d = loadDescriptor(req.params.id);
-  res.json(buildSpec(d));
+  const theme = loadTheme(req.params.id);
+  res.json(buildSpec(theme, loadThemeLayouts(req.params.id)));
 }));
 
 // 画廊卡片预览：3 张样例页的场景图
@@ -197,42 +185,37 @@ app.get('/api/assets/:file', wrap(async (req, res) => {
 }));
 
 // ---------- Agent 中继：内容源 ----------
-// 整册推送：逐页归一 → resolve + 校验 → 存 deck → SSE 推 'deck' 给浏览器预览
+// 整册推送（SVG-as-IR）：逐页归一为一整页 SVG → 存 deck → SSE 推 'deck' 给浏览器内联预览。
+// 不再 resolve/质量校验——SVG 就是最终版式，浏览器预览与 .pptx 导出消费同一份 SVG。
 app.post('/api/agent/deck', wrap(async (req, res) => {
-  const { title, templateId, slides } = req.body || {};
+  const { title, themeId, templateId, slides } = req.body || {};
   if (!Array.isArray(slides) || slides.length === 0) {
     return res.status(400).json({ error: '请提供 slides 数组' });
   }
-  const d = loadDescriptor(templateId);
+  const d = loadDescriptor(themeId || templateId);
   const total = slides.length;
-  const enriched = slides.map((raw, index) => {
-    const slide = normalize.normalizeSlide(raw, index, total, null);
-    const { scene, warnings } = materialize(slide, d, { title, index, total });
-    return { ...slide, scene, warnings };
-  });
+  const enriched = slides.map((raw, index) => normalize.normalizeSlide(raw, index, total));
   const version = relay.setDeck({ title: title || '', templateId: d._id, canvas: d.canvas, slides: enriched });
   res.json({
-    templateId: d._id,
+    themeId: d._id,
     canvas: d.canvas,
-    scenes: enriched.map((s) => s.scene),
-    warnings: enriched.map((s) => s.warnings),
+    slides: enriched,
+    recovered: enriched.map((s, i) => (s._recovered ? i : -1)).filter((i) => i >= 0),
     version,
   });
 }));
 
 // 单页推送：Agent 逐页流式生成（复刻旧 SSE 的逐页体验）；单页粒度写入，不覆盖整册
 app.post('/api/agent/slide', wrap(async (req, res) => {
-  const { index, slide: raw, templateId } = req.body || {};
+  const { index, slide: raw, themeId, templateId } = req.body || {};
   const idx = Number(index);
   if (!(idx >= 0)) return res.status(400).json({ error: 'index 非法' });
   const state = relay.getState();
-  const d = loadDescriptor(templateId || state.templateId);
+  const d = loadDescriptor(themeId || templateId || state.templateId);
   const total = Math.max(state.slides.length, idx + 1);
-  const slide = normalize.normalizeSlide(raw, idx, total, null);
-  const { scene, warnings } = materialize(slide, d, { title: state.title, index: idx, total });
-  const enriched = { ...slide, scene, warnings };
-  const version = relay.setSlide(idx, enriched, d.canvas);
-  res.json({ index: idx, slide: enriched, scene, warnings, canvas: d.canvas, version });
+  const slide = normalize.normalizeSlide(raw, idx, total);
+  const version = relay.setSlide(idx, slide, d.canvas);
+  res.json({ index: idx, slide, canvas: d.canvas, version });
 }));
 
 // 长轮询：阻塞直到有人类动作，或 ~25s 超时返回 heartbeat（取代被删的自愈 loop 的协作心跳）
@@ -251,16 +234,16 @@ app.get('/api/agent/state', (req, res) => {
 app.post('/api/agent/action', wrap(async (req, res) => {
   const { action, payload = {} } = req.body || {};
   if (!action) return res.status(400).json({ error: '缺少 action' });
-  if (action === 'template-pick' && payload.templateId) {
-    relay.setTemplate(payload.templateId);
+  if ((action === 'template-pick' || action === 'theme-pick') && (payload.themeId || payload.templateId)) {
+    relay.setTemplate(payload.themeId || payload.templateId);
   } else if (action === 'edit' && Number(payload.index) >= 0 && payload.slide) {
+    // 浏览器直接编辑：把改后的整页 SVG 归一清洗后落回权威 deck
     const state = relay.getState();
-    const d = loadDescriptor(payload.templateId || state.templateId);
+    const d = loadDescriptor(payload.themeId || payload.templateId || state.templateId);
     const idx = Number(payload.index);
     const total = Math.max(state.slides.length, idx + 1);
-    const slide = normalize.normalizeSlide(payload.slide, idx, total, null);
-    const { scene, warnings } = materialize(slide, d, { title: state.title, index: idx, total });
-    relay.setSlide(idx, { ...slide, scene, warnings }, d.canvas);
+    const slide = normalize.normalizeSlide(payload.slide, idx, total);
+    relay.setSlide(idx, slide, d.canvas);
   }
   const item = relay.enqueueAction({ action, payload });
   res.json({ ok: true, seq: item.seq, version: item.version });
@@ -281,44 +264,14 @@ app.get('/api/stream', (req, res) => {
   req.on('close', unsubscribe);
 });
 
-// ---------- 本地重排（浏览器换版式/换模板即时预览，纯本地，不经 Agent） ----------
-// slides 不变，只重算场景图与警告；total 可选（单页重排传整本页数，页脚页码才正确）
-app.post('/api/reresolve', wrap(async (req, res) => {
-  const { slides, templateId, title, total } = req.body;
-  if (!Array.isArray(slides) || slides.length === 0) {
-    return res.status(400).json({ error: '没有可重排的幻灯片' });
-  }
-  const d = loadDescriptor(templateId);
-  const constraints = d.constraints && d.constraints.chars;
-  const deckTotal = Number.isFinite(Number(total)) && Number(total) > 0 ? Number(total) : slides.length;
-  const scenes = [];
-  const warningsList = [];
-  for (let pos = 0; pos < slides.length; pos++) {
-    const slide = slides[pos] || {};
-    if (slide.type === 'free') {
-      scenes.push(null);
-      warningsList.push([]);
-      continue;
-    }
-    const index = Number.isFinite(Number(slide.index)) ? Number(slide.index) : pos;
-    const scene = resolve(d, [slide], { title, index, total: deckTotal }).slides[0];
-    scenes.push(scene);
-    warningsList.push(validateSlide({ slide, scene, canvas: d.canvas, constraints, index }));
-  }
-  res.json({ scenes, warningsList, canvas: d.canvas, templateId: d._id });
-}));
-
 app.post('/api/export', wrap(async (req, res) => {
-  const { slides, title, templateId } = req.body;
+  const { slides, title, themeId, templateId } = req.body;
   if (!Array.isArray(slides) || slides.length === 0) {
     return res.status(400).json({ error: '没有可导出的幻灯片' });
   }
-  // free 自由排版页：Chrome headless 截图 → PNG data URL，逐页串行
-  const renderFree = async (slide) => {
-    const png = await htmlShot.renderToPng(slide.html);
-    return { free: true, pngData: `data:image/png;base64,${png.toString('base64')}` };
-  };
-  const buf = await buildPptx(slides, title, templateId, { renderFree });
+  // SVG-as-IR：每页 slide.svg 经 svgToScene 编译为原生 pptx 对象，无需 Chrome 栅格化
+  const d = loadDescriptor(themeId || templateId);
+  const buf = await buildPptx(slides, title, d._id, { canvas: d.canvas });
   const filename = encodeURIComponent((title || 'slides') + '.pptx');
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.presentationml.presentation');
   res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${filename}`);

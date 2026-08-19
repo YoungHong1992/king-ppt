@@ -111,14 +111,14 @@ const COMMANDS = {
     out(await req(baseUrl(opts), '/api/templates'));
   },
 
-  // 所选模板的创作规格：字数约束/配色/free-SVG 规范/8 类版式契约文本
+  // 所选主题的创作规格：设计令牌 + 4 个角色原型页 + SVG 创作规则
   async spec(opts, positional) {
     const id = positional[0];
     if (!id) die('用法：king-ppt spec <templateId>');
     out(await req(baseUrl(opts), `/api/templates/${encodeURIComponent(id)}/spec`));
   },
 
-  // 推整册：{ title, templateId, slides[] } → resolve+校验 → SSE 推浏览器预览
+  // 推整册：{ title, themeId, slides:[{svg}] } → 归一清洗 → SSE 推浏览器内联预览
   async push(opts, positional) {
     const deck = readJsonInput(positional[0]);
     out(await req(baseUrl(opts), '/api/agent/deck', { method: 'POST', body: deck }));
@@ -180,9 +180,9 @@ async function main() {
       '  serve [--port=N] [--no-open]   前台启动中继服务器 + 开浏览器（以后台任务运行）',
       '  stop                           终止运行中的服务器',
       '  templates                      列出模板',
-      '  spec <templateId>              某模板的创作规格（字数/配色/free-SVG/版式契约）',
-      '  push [deck.json]               推整册（stdin 或文件）→ 浏览器实时预览',
-      '  push-slide <index> [s.json]    推单页（逐页流式）',
+      '  spec <templateId>              某主题的创作规格（设计令牌 + 角色原型页 + SVG 规则）',
+      '  push [deck.json]               推整册 {title,themeId,slides:[{svg}]}（stdin 或文件）→ 实时预览',
+      '  push-slide <index> [s.json]    推单页 {svg}（逐页流式）',
       '  next [--timeout=ms]            长轮询下一个人类动作（阻塞）',
       '  state                          当前 deck 快照',
       '  asset --file=|--data=|--url=   供图，返回 slide.image 载荷',
