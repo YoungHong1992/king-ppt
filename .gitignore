@@ -2,3 +2,12 @@ node_modules/
 *.pptx
 .DS_Store
 .debug/
+
+# 运行时数据 / 日志（KING_PPT_HOME 默认写 ~/.king-ppt，项目内亦可能生成）
+.king-ppt/
+.king-ppt-*/
+*.serve.log
+
+# 参考项目（各自独立 git 仓库，仅供本地对照，不纳入本仓库）
+dashi-ppt-skill/
+ppt-master/

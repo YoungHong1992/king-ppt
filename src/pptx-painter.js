@@ -7,6 +7,7 @@ function paintShape(slide, o) {
   if (o.fill) opts.fill = { color: o.fill, transparency: o.transparency || 0 };
   if (o.line) opts.line = o.line;
   if (o.rectRadius !== undefined) opts.rectRadius = o.rectRadius;
+  if (o.points) opts.points = o.points; // custGeom 自定义几何路径
   if (o.flipH) opts.flipH = true;
   if (o.flipV) opts.flipV = true;
   if (o.rotate) opts.rotate = o.rotate;
@@ -56,7 +57,8 @@ function paintTable(slide, o) {
 }
 
 function paintImage(slide, o) {
-  slide.addImage({ path: o.src, x: o.x, y: o.y, w: o.w, h: o.h });
+  const src = o.data ? { data: o.data } : { path: o.src }; // data URI 内联图 / 本地路径
+  slide.addImage({ ...src, x: o.x, y: o.y, w: o.w, h: o.h });
 }
 
 const PAINTERS = {

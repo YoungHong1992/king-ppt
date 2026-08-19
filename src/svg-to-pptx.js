@@ -3,8 +3,9 @@
 // 支持 rect/circle/ellipse/line/text/polygon(近似)/g(translate)；
 // 不支持的元素（滤镜/渐变/图片）在生成端已被 prompt 禁止，这里忽略即可。
 const { XMLParser } = require('fast-xml-parser');
-const { normalize } = require('../public/svg-frame.js');
-const { textWidthIn } = require('./validate');
+const { normalize } = require('./svg-sanitize');
+const { textWidthIn } = require('./text-measure');
+const { pathToAbsOps, opsBounds } = require('./svg-path');
 
 const DEFAULT_VB = { w: 1280, h: 720 };
 
@@ -34,7 +35,7 @@ function attrsOf(node) {
   return (node && node[':@']) || {};
 }
 
-const SHAPE_TAGS = ['g', 'rect', 'circle', 'ellipse', 'line', 'text', 'polygon', 'polyline'];
+const SHAPE_TAGS = ['g', 'rect', 'circle', 'ellipse', 'line', 'text', 'polygon', 'polyline', 'path', 'image'];
 
 // preserveOrder 树的层间结构：父节点 = { <tag>: [子节点...], ':@': {属性} }。
 // 递归收集某层指定标签的元素；<g> 只支持 translate，叠加到子元素坐标上
@@ -76,7 +77,45 @@ function polygonShape(points) {
   return 'rect';
 }
 
-// text 元素 → 场景 text 对象：SVG 的 x/y 是基线锚点，转成包围盒 + 对齐
+// <path d> → custGeom：绝对算子先算包围盒，再相对化并换英寸。pptxgenjs 点坐标是「相对形状盒、单位英寸」。
+function pathObject(el, k, base) {
+  const ops = pathToAbsOps(el.attrs['@_d']);
+  if (!ops.length) return null;
+  const b = opsBounds(ops);
+  if (!b) return null;
+  const ox = el.tx + b.minX;
+  const oy = el.ty + b.minY;
+  const rx = (x) => (x - b.minX) * k; // 绝对 → 相对盒 → 英寸
+  const ry = (y) => (y - b.minY) * k;
+  const points = ops.map((op) => {
+    if (op.close) return { close: true };
+    if (op.curve && op.curve.type === 'cubic') {
+      return { x: rx(op.x), y: ry(op.y), curve: { type: 'cubic', x1: rx(op.curve.x1), y1: ry(op.curve.y1), x2: rx(op.curve.x2), y2: ry(op.curve.y2) } };
+    }
+    if (op.curve && op.curve.type === 'quadratic') {
+      return { x: rx(op.x), y: ry(op.y), curve: { type: 'quadratic', x1: rx(op.curve.x1), y1: ry(op.curve.y1) } };
+    }
+    return op.moveTo ? { x: rx(op.x), y: ry(op.y), moveTo: true } : { x: rx(op.x), y: ry(op.y) };
+  });
+  return {
+    kind: 'shape', shape: 'custGeom',
+    x: ox * k, y: oy * k, w: (b.maxX - b.minX) * k, h: (b.maxY - b.minY) * k,
+    points,
+    ...base,
+  };
+}
+
+// <image href="data:..."> → 内联图片对象（外链已被 sanitize 清除，只剩 data URI）
+function imageObject(el, k) {
+  const a = el.attrs;
+  const href = a['@_href'] || a['@_xlink:href'];
+  if (!href || !/^data:/.test(String(href))) return null;
+  return {
+    kind: 'image', data: String(href),
+    x: (el.tx + num(a['@_x'])) * k, y: (el.ty + num(a['@_y'])) * k,
+    w: num(a['@_width']) * k, h: num(a['@_height']) * k,
+  };
+}
 function textObject(el, k) {
   const a = el.attrs;
   const fsPx = num(a['@_font-size'], 20);
@@ -205,6 +244,12 @@ function svgToScene(svgString, canvas) {
       }
     } else if (el.tag === 'text') {
       const obj = textObject(el, k);
+      if (obj) objects.push(obj);
+    } else if (el.tag === 'path') {
+      const obj = pathObject(el, k, base);
+      if (obj) objects.push(obj);
+    } else if (el.tag === 'image') {
+      const obj = imageObject(el, k);
       if (obj) objects.push(obj);
     }
   }

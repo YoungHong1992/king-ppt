@@ -1,0 +1,32 @@
+{
+  "id": "warm-retro",
+  "name": "复古蓝米",
+  "canvas": { "vbWidth": 1280, "vbHeight": 720 },
+  "tokens": {
+    "color": {
+      "bg": "#F7F1E5",
+      "surface": "#FBF7EE",
+      "primary": "#2B4C7E",
+      "primaryDeep": "#1F3A63",
+      "accent": "#E2703A",
+      "secondary": "#5B8A72",
+      "divider": "#D8CCB4",
+      "text": "#33302B",
+      "textMuted": "#6B6155",
+      "textFaint": "#99907F",
+      "onDark": "#F7F1E5",
+      "onDarkMuted": "#EFE6D2"
+    },
+    "font": {
+      "title": "Georgia, 'KaiTi', serif",
+      "body": "'Segoe UI', 'Microsoft YaHei', sans-serif"
+    },
+    "scale": {
+      "display": 92, "sectionNo": 116, "sectionTitle": 60,
+      "pageTitle": 42, "eyebrow": 22, "body": 25, "caption": 19, "footer": 15
+    },
+    "geometry": { "cornerRadius": 4, "hairline": 2, "margin": 84 }
+  },
+  "tone": "温暖复古，米底暖橙点缀，衬线标题，克制的装饰",
+  "layouts": ["cover", "section", "content", "closing"]
+}
