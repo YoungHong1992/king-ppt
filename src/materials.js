@@ -1,6 +1,6 @@
 // 阶段0 素材存储：<KING_PPT_HOME>/materials/<原文件名>
-// 与 assets.js 不同——素材要保留原文件名与扩展名，供 Agent 用自己的文件工具按类型读取
-// （pdf/docx/md/txt/图片…）。浏览器拖拽上传走此模块；放进项目目录的素材由 Agent 直读，不经这里。
+// 与 assets.js 不同——素材保留原文件名与扩展名，便于按类型读取（pdf/docx/md/txt/图片…）。
+// 浏览器拖拽上传走此模块；生成大纲/整册时服务端读取文本类素材折进输入。
 const fs = require('fs');
 const path = require('path');
 const { MATERIALS_DIR } = require('./paths');
@@ -27,7 +27,7 @@ function uniquePath(name) {
   return candidate;
 }
 
-// 写入 base64 素材，返回 { name, path, bytes }。path 为绝对路径，供 Agent 直读。
+// 写入 base64 素材，返回 { name, path, bytes }。path 为绝对路径。
 function saveMaterial(name, base64) {
   const buf = Buffer.from(String(base64 || ''), 'base64');
   if (buf.length === 0) throw new Error('素材数据为空');
@@ -39,7 +39,7 @@ function saveMaterial(name, base64) {
   return { name: finalName, path: full, bytes: buf.length };
 }
 
-// 读取已上传的文本类素材内容，拼成一段供 LLM 参考（server-gen 模式用）。
+// 读取已上传的文本类素材内容，拼成一段供 LLM 参考（生成大纲/整册时用）。
 // 只读文本类扩展名（md/txt/csv/json 等）；二进制（pdf/docx/图片）暂不解析，仅列名。
 // 返回 { text, used:[names], skipped:[names] }；总量截断到 maxChars 防 prompt 过长。
 const TEXT_EXT = new Set(['.md', '.markdown', '.txt', '.text', '.csv', '.tsv', '.json', '.log', '.rtf']);

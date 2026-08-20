@@ -1,12 +1,12 @@
-// SVG-as-IR 创作契约：把一个「主题令牌包」翻译成用户 Agent 能照着写的「怎么用这套设计语言画整页 SVG」规格。
+// SVG-as-IR 创作契约：把一个「主题令牌包」翻译成「怎么用这套设计语言画整页 SVG」的规格。
 // 每一页 = 一整张 <svg viewBox="0 0 1280 720">，它就是唯一中间表示（IR）：
-//   Agent 写 SVG → 中继原样转发 → 浏览器内联预览 + 就地编辑 → svg-to-pptx 编译成原生可编辑 .pptx。
+//   生成引擎写 SVG → 浏览器内联预览 + 就地编辑 → svg-to-pptx 编译成原生可编辑 .pptx。
 // 预览==导出：浏览器与 .pptx 消费同一份被 sanitize 过的 SVG，故此处只谈「怎么写 SVG」，不再有 8 类版式字段。
-// 由 GET /api/templates/:id/spec 暴露；静态规则同时写进 SKILL.md 作为长期契约。
+// 由 GET /api/templates/:id/spec 暴露；生成引擎按此契约逐页作画。
 
 const CANVAS = { vbWidth: 1280, vbHeight: 720 };
 
-// 四种页面角色（role）——只是排版意图的提示，不是硬字段；Agent 按内容自行判断
+// 四种页面角色（role）——只是排版意图的提示，不是硬字段；按内容自行判断
 const ROLE_GUIDE = [
   { role: 'cover', when: '第 1 页封面', hint: '超大主标题 + 眉题 + 副标题/署名；大面积主色或留白，一个视觉锚点' },
   { role: 'section', when: '章节过渡页', hint: '深色底 + 超大章节序号(01/02) + 章节名；信息极少，用来换气' },
@@ -69,7 +69,7 @@ const AUTHORING_RULES = `
 - 严格对齐：同类元素共用 x 基线；成组卡片等距分布。
 - 一页只讲一件事；宁可留白，不要塞满。`.trim();
 
-// ---------- 从令牌合成 4 个角色原型页（既作画廊预览，也作 Agent 起手骨架） ----------
+// ---------- 从令牌合成 4 个角色原型页（既作预览缩略，也作生成起手骨架） ----------
 const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
 function prototypeFor(role, theme) {
@@ -151,7 +151,7 @@ function buildSpec(theme, layoutFiles = []) {
     tokens: theme.tokens || {},
     tone: theme.tone || '',
     roles: ROLE_GUIDE,
-    layouts,                         // 4 个角色原型页（含 svg），Agent 可直接改文字/复用骨架
+    layouts,                         // 4 个角色原型页（含 svg），生成时可直接改文字/复用骨架
     tokensText: tokensText(theme),   // 人读的设计系统说明
     authoringText: AUTHORING_RULES,  // SVG 创作硬规则
     deckShape: '{ title, themeId, slides: [ { svg, role?, title? } ] }',

@@ -1,8 +1,6 @@
-// 中继客户端：REST 动作 + SSE 订阅。前端只跟中继服务器对话，从不内置大模型。
-// 协议回顾（medium-agnostic，SVG 切换后不变）：
-//   浏览器 POST /api/agent/action {action,payload} → 入队给用户 Agent 长轮询；
-//   有副作用的动作（theme-pick / edit）服务端先落权威 deck，再广播；
-//   服务端 SSE /api/stream 推 deck / slide 事件回浏览器预览。
+// 前端 API 客户端：REST + SSE 订阅。浏览器与本程序服务端对话，生成由服务端内置完成（server-gen）。
+//   浏览器 POST /api/generate/* 触发生成；POST /api/deck/* 直接改演示态（选主题 / 就地编辑）；
+//   服务端 SSE /api/stream 推 deck / slide / doc 事件回浏览器实时预览。
 
 async function req(path, { method = 'GET', body, raw = false } = {}) {
   const resp = await fetch(path, {
@@ -21,11 +19,12 @@ async function req(path, { method = 'GET', body, raw = false } = {}) {
 export const api = {
   listThemes: () => req('/api/templates'),
   themeSpec: (id) => req(`/api/templates/${encodeURIComponent(id)}/spec`),
-  state: () => req('/api/agent/state'),
-  doc: () => req('/api/agent/doc'),
-  // 浏览器把人类动作交给 Agent。有副作用动作服务端会先落 deck。
-  action: (action, payload = {}) => req('/api/agent/action', { method: 'POST', body: { action, payload } }),
-  // 阶段0：上传参考素材（base64）；服务端存盘并入队 material-added 通知 Agent
+  // 演示态快照（刷新/重连恢复）：deck=整册幻灯片，doc=内容大纲
+  deck: () => req('/api/deck'),
+  doc: () => req('/api/doc'),
+  // 就地编辑：把改后的整页 SVG 落回服务端（sanitize 后广播，预览==导出消费同一份）
+  editSlide: (index, svg) => req('/api/deck/slide', { method: 'POST', body: { index, svg } }),
+  // 阶段0：上传参考素材（base64）；服务端存盘，生成大纲/整册时自动参考
   uploadMaterial: (name, data) => req('/api/materials', { method: 'POST', body: { name, data } }),
   // 内置生成（阶段1，server-gen 模式）：多供应商配置读写/测试 + 生成/改稿大纲。生成结果经 SSE 'doc' 回来。
   getProviders: () => req('/api/providers'),
@@ -43,6 +42,12 @@ export const api = {
     req('/api/generate/outline', { method: 'POST', body: { topic, pages, materials } }),
   reviseOutline: (comments) =>
     req('/api/generate/outline', { method: 'POST', body: { comments } }),
+  // 阶段2：按主题 + 定稿大纲，服务端逐页流式生成整册（结果经 SSE 'deck'/'slide' 实时回来）
+  generateDeck: (themeId) =>
+    req('/api/generate/deck', { method: 'POST', body: { themeId } }),
+  // 单页重生成（可带修改意见 feedback）
+  regenSlide: (index, feedback) =>
+    req('/api/generate/slide', { method: 'POST', body: { index, feedback } }),
   // 导出当前 deck 为 .pptx（返回 Blob）
   async export(slides, title, themeId) {
     const resp = await req('/api/export', { method: 'POST', raw: true, body: { slides, title, themeId } });

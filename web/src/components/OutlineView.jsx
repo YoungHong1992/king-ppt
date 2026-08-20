@@ -2,7 +2,7 @@ import React, { useRef, useState, useCallback, useEffect } from 'react';
 import { renderMarkdown } from '../md.js';
 
 // 内容大纲文档视图（阶段1）：渲染 Markdown + 划词批注。
-// 划词 → 浮动气泡 → 写意见 → 高亮该段并入队本地批注列表（攒一批后由右栏统一发给 Agent）。
+// 划词 → 浮动气泡 → 写意见 → 高亮该段并入队本地批注列表（攒一批后由右栏统一提交改稿）。
 // 标注呈现为「下划线 + 浅底色」，单条线、不叠加（重叠选区会被拦下）。
 // 双向联动：点文稿标注 → 右栏对应条目高亮；点右栏条目 → 文稿标注高亮并滚动到位（由 activeCommentId 驱动）。
 let CID = 0; // 单调批注 id 计数（避免 Math.random）
@@ -43,7 +43,7 @@ function paintRange(range, cid) {
   return spans;
 }
 
-export default function OutlineView({ markdown, version, serverGen, comments, activeCommentId, onAddComment, onActivateComment }) {
+export default function OutlineView({ markdown, version, comments, activeCommentId, onAddComment, onActivateComment }) {
   const docRef = useRef(null);
   const [bubble, setBubble] = useState(null); // { top, left, block, quote, range, overlap }
   const [note, setNote] = useState('');
@@ -166,11 +166,9 @@ export default function OutlineView({ markdown, version, serverGen, comments, ac
     return (
       <div className="outline-empty">
         <div className="empty-art">📝</div>
-        <div className="empty-title">{serverGen ? '还没有内容大纲' : '等待 Agent 推送内容大纲'}</div>
+        <div className="empty-title">还没有内容大纲</div>
         <div className="empty-sub">
-          {serverGen
-            ? '在左侧输入主题、点「生成大纲」即可开始；生成后选中文字即可批注，攒一批后统一发送'
-            : 'Agent 会把结构化的 Markdown 底稿推到这里；选中文字即可批注，攒一批后统一发送'}
+          在左侧输入主题、点「生成大纲」即可开始；生成后选中文字即可批注，攒一批后统一提交
         </div>
       </div>
     );

@@ -1,5 +1,5 @@
 // 内容大纲归一化（阶段1：Markdown 内容底稿）。仿 src/normalize.js 的「单一漏斗、永不抛错」范式：
-// Agent 推来的大纲文本一律经此清洗，浏览器渲染与后续出片阶段消费同一份归一结果。
+// 大纲文本经此清洗，浏览器渲染与后续出片阶段消费同一份归一结果。
 // 大纲是不可信输入（可能内嵌 HTML），故复用 src/svg-sanitize.js 的 removeTag 做入站清洗，
 // 前端渲染器（web/src/md.js）再对一切文本 HTML 转义——两道防线。
 const { removeTag } = require('./svg-sanitize');
@@ -68,9 +68,9 @@ function normalizeOutline(raw) {
   }
 }
 
-// 入站批注批次校验（浏览器 → Agent）。永不抛错：
+// 入站批注批次校验（浏览器 → 服务端改稿）。永不抛错：
 //  - 剔除 block 非法 / quote 空 / comment 空 的条目
-//  - 剔除 quote 在当前权威 doc 中已不存在的「失效批注」（Agent 上一轮改稿后旧引用失效）
+//  - 剔除 quote 在当前权威 doc 中已不存在的「失效批注」（上一轮改稿后旧引用失效）
 //  - 截断超长字段与超量条目
 function normalizeComments(rawComments, markdown) {
   const doc = String(markdown || '');

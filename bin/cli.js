@@ -1,11 +1,11 @@
 #!/usr/bin/env node
-// 卷王PPT CLI —— 用户 Agent 的 shell-out 接口。
+// 卷王PPT CLI —— 独立程序的运维入口。
 //
-// 两类子命令：
-//   serve   —— 前台阻塞启动中继服务器 + 开浏览器（Agent 以后台任务方式拉起，保活）。
-//   其余    —— 短命 HTTP 客户端，经 KING_PPT_HOME/server.json 定位运行中的服务器。
+//   serve  —— 前台阻塞启动服务器 + 开浏览器（可用后台任务方式拉起保活）。
+//   stop   —— 终止运行中的服务器（读 server.json 的 pid）。
+//   export —— 把当前演示态导出为 .pptx 文件（也可直接在网页里点「导出 PPTX」）。
 //
-// 约定：成功打印 JSON 到 stdout；失败打印到 stderr 并以非零码退出，便于 Agent 判读。
+// 内容生成、选模板、编辑全部在浏览器里完成；本 CLI 不再承担内容通道。
 const fs = require('fs');
 const { exec } = require('child_process');
 const { start } = require('../src/server');
@@ -71,28 +71,14 @@ async function req(base, path, { method = 'GET', body, raw = false } = {}) {
   return raw ? Buffer.from(await resp.arrayBuffer()) : resp.json();
 }
 
-// 读入 JSON：优先位置参数指定的文件，否则读 stdin（支持管道）
-function readJsonInput(file) {
-  const text = file ? fs.readFileSync(file, 'utf8') : fs.readFileSync(0, 'utf8');
-  if (!text.trim()) die('未提供 JSON 输入（给出文件路径，或经 stdin 管道传入）。');
-  try { return JSON.parse(text); } catch (e) { die(`JSON 解析失败：${e.message}`); }
-}
-
-// 读入纯文本（Markdown 大纲）：文件路径，或 `-`/空 读 stdin（支持管道）
-function readTextInput(file) {
-  const text = (file && file !== '-') ? fs.readFileSync(file, 'utf8') : fs.readFileSync(0, 'utf8');
-  if (!text.trim()) die('未提供 Markdown 输入（给出 .md 文件路径，或用 - 经 stdin 传入）。');
-  return text;
-}
-
 const COMMANDS = {
-  // 前台启动中继服务器 + 开浏览器。Agent 应以后台任务方式运行此命令保活。
+  // 前台启动服务器 + 开浏览器。可用后台任务方式运行保活。
   async serve(opts) {
     const port = opts.port ? Number(opts.port) : (Number(process.env.PORT) || 3210);
     const { port: actual } = await start(port);
     const url = `http://localhost:${actual}`;
     out({ status: 'serving', url, port: actual, home: RUNTIME_FILE });
-    process.stderr.write(`\n  卷王PPT 已启动: ${url}\n  用户 Agent：GET /api/agent/next 长轮询人类动作；POST /api/agent/deck|slide 推内容。\n\n`);
+    process.stderr.write(`\n  卷王PPT 已启动: ${url}\n  在浏览器里配置模型 → 生成大纲 → 选模板 → 生成幻灯片 → 导出。\n\n`);
     if (!opts['no-open']) openBrowser(url);
     // 前台常驻，不 resolve；由后台任务或 `king-ppt stop` 终止
   },
@@ -113,68 +99,13 @@ const COMMANDS = {
     out({ status: 'stopped', pid: rt.pid });
   },
 
-  // 模板列表（供人类/Agent 挑方案）
-  async templates(opts) {
-    out(await req(baseUrl(opts), '/api/templates'));
-  },
-
-  // 所选主题的创作规格：设计令牌 + 4 个角色原型页 + SVG 创作规则
-  async spec(opts, positional) {
-    const id = positional[0];
-    if (!id) die('用法：king-ppt spec <templateId>');
-    out(await req(baseUrl(opts), `/api/templates/${encodeURIComponent(id)}/spec`));
-  },
-
-  // 推整册：{ title, themeId, slides:[{svg}] } → 归一清洗 → SSE 推浏览器内联预览
-  async push(opts, positional) {
-    const deck = readJsonInput(positional[0]);
-    out(await req(baseUrl(opts), '/api/agent/deck', { method: 'POST', body: deck }));
-  },
-
-  // 推单页（逐页流式）：king-ppt push-slide <index> [file.json]
-  async 'push-slide'(opts, positional) {
-    const index = Number(positional[0]);
-    if (!(index >= 0)) die('用法：king-ppt push-slide <index> [file.json]');
-    const slide = readJsonInput(positional[1]);
-    const body = slide.slide ? { index, ...slide } : { index, slide };
-    out(await req(baseUrl(opts), '/api/agent/slide', { method: 'POST', body }));
-  },
-
-  // 推内容大纲（阶段1）：king-ppt push-outline [file.md|-] [--title=标题]
-  async 'push-outline'(opts, positional) {
-    const markdown = readTextInput(positional[0]);
-    const body = { markdown, ...(opts.title ? { title: String(opts.title) } : {}) };
-    out(await req(baseUrl(opts), '/api/agent/outline', { method: 'POST', body }));
-  },
-
-  // 长轮询下一个人类动作（阻塞至有动作或 ~25s 心跳）
-  async next(opts) {
-    const timeout = opts.timeout ? `?timeout=${Number(opts.timeout)}` : '';
-    out(await req(baseUrl(opts), `/api/agent/next${timeout}`));
-  },
-
-  // 完整 deck 快照（Agent 重启/重连恢复）
-  async state(opts) {
-    out(await req(baseUrl(opts), '/api/agent/state'));
-  },
-
-  // 供图：--data=<base64> | --url=<url> | --file=<本地图片> → slide.image 载荷
-  async asset(opts) {
-    let body;
-    if (opts.file) body = { data: fs.readFileSync(opts.file).toString('base64'), ext: (opts.file.split('.').pop() || 'png').toLowerCase() };
-    else if (opts.data) body = { data: opts.data, ext: opts.ext || 'png' };
-    else if (opts.url) body = { url: opts.url };
-    else die('用法：king-ppt asset (--file=<图片> | --data=<base64> | --url=<url>)');
-    out(await req(baseUrl(opts), '/api/assets', { method: 'POST', body }));
-  },
-
-  // 导出当前 deck 为 .pptx：king-ppt export <out.pptx>
+  // 导出当前演示态为 .pptx：king-ppt export <out.pptx>
   async export(opts, positional) {
     const dest = positional[0];
     if (!dest) die('用法：king-ppt export <out.pptx>');
     const base = baseUrl(opts);
-    const st = await req(base, '/api/agent/state');
-    if (!Array.isArray(st.slides) || st.slides.filter(Boolean).length === 0) die('当前没有可导出的幻灯片，请先 push。');
+    const st = await req(base, '/api/deck');
+    if (!Array.isArray(st.slides) || st.slides.filter(Boolean).length === 0) die('当前没有可导出的幻灯片，请先在网页里生成。');
     const buf = await req(base, '/api/export', {
       method: 'POST', raw: true,
       body: { slides: st.slides, title: st.title, templateId: st.templateId },
@@ -189,21 +120,15 @@ async function main() {
   const { opts, positional } = parseArgs(rest);
   if (!cmd || cmd === 'help' || opts.help) {
     out([
-      '卷王PPT CLI —— 用户 Agent 的 PPT 生成接口',
+      '卷王PPT CLI —— 独立 PPT 生成程序',
       '',
-      '  serve [--port=N] [--no-open]   前台启动中继服务器 + 开浏览器（以后台任务运行）',
+      '  serve [--port=N] [--no-open]   前台启动服务器 + 开浏览器（可用后台任务运行）',
       '  stop                           终止运行中的服务器',
-      '  templates                      列出模板',
-      '  spec <templateId>              某主题的创作规格（设计令牌 + 角色原型页 + SVG 规则）',
-      '  push [deck.json]               推整册 {title,themeId,slides:[{svg}]}（stdin 或文件）→ 实时预览',
-      '  push-slide <index> [s.json]    推单页 {svg}（逐页流式）',
-      '  push-outline [file.md|-]       推 Markdown 内容大纲（阶段1）→ 浏览器渲染批注（--title= 可选）',
-      '  next [--timeout=ms]            长轮询下一个人类动作（阻塞）',
-      '  state                          当前 deck 快照',
-      '  asset --file=|--data=|--url=   供图，返回 slide.image 载荷',
-      '  export <out.pptx>              导出当前 deck 为 .pptx',
+      '  export <out.pptx>              导出当前演示态为 .pptx',
       '',
       '  通用：--port=N 或 KING_PPT_PORT 覆盖服务器定位；KING_PPT_HOME 指定数据根目录',
+      '',
+      '  生成大纲 / 选模板 / 编辑等均在浏览器里完成。',
     ].join('\n'));
     return;
   }

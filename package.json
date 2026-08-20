@@ -1,7 +1,7 @@
 {
   "name": "king-ppt",
   "version": "0.1.0",
-  "description": "卷王PPT：Agent 驱动的 PPT Skill —— 用户 Agent 当内容源，起网页让人挑模板/实时预览/就地编辑，导出可编辑 .pptx（确定性引擎，无内置大模型）",
+  "description": "卷王PPT：独立的 PPT 生成程序 —— 内置多供应商 LLM，网页里定大纲/挑模板/实时预览/就地编辑，导出可编辑 .pptx（SVG-as-IR 确定性引擎，预览==导出）",
   "bin": {
     "king-ppt": "bin/cli.js"
   },
@@ -16,9 +16,8 @@
     "pptx",
     "slides",
     "presentation",
-    "skill",
-    "agent",
-    "claude-code"
+    "svg",
+    "ai"
   ],
   "license": "MIT",
   "type": "commonjs",

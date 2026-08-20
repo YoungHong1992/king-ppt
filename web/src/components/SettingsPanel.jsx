@@ -7,7 +7,7 @@ import DefaultsView from './settings/DefaultsView.jsx';
 
 // 多供应商模型设置面板：左导航（模型服务 / 默认模型）+ 右内容区。
 // 数据源单一：GET /api/providers 一次性拿 { capabilities, capabilityLabels, templates, instances, active }；
-// 任何增删改后调 reload() 重新拉取并经 onProvidersChange 通知 App 刷新 serverGen / model-chip。
+// 任何增删改后调 reload() 重新拉取并经 onProvidersChange 通知 App 刷新模型状态 / model-chip。
 // 密钥「只出不进」：实例只回 hasKey + keyPreview 掩码，明文永不回传。
 export default function SettingsPanel({ onClose, onProvidersChange, flash }) {
   const [data, setData] = useState(null);

@@ -7,7 +7,6 @@ const { resolve } = require('./layout-resolver'); // 仅供旧模板画廊 sampl
 const assets = require('./assets');
 const { extractFromPptx, saveTemplate } = require('./extract');
 const { parseSourcePages } = require('./pptx-pages');
-const sessions = require('./sessions');
 const normalize = require('./normalize');
 const normalizeOutline = require('./normalize-outline');
 const materials = require('./materials');
@@ -16,18 +15,19 @@ const { createRelay } = require('./relay');
 const { RUNTIME_FILE } = require('./paths');
 const llmprovider = require('./llmprovider');
 const genOutline = require('./generate-outline');
+const genDeck = require('./generate-deck');
 
 const app = express();
-const relay = createRelay(); // Agent ↔ 浏览器 的有状态中继（deck 存储 + 事件总线 + 动作队列）
+const relay = createRelay(); // 演示态存储（deck/doc）+ SSE 广播总线
 
-// 上传模板 / Agent 推 deck / 配图以 base64 进 JSON，放宽体积；其余路由维持 2mb
+// 上传模板 / 就地编辑整页 SVG / 配图以 base64 进 JSON，放宽体积；其余路由维持 2mb
 const jsonBody = express.json({ limit: '2mb' });
 const jsonBodyLarge = express.json({ limit: '30mb' });
 app.use((req, res, next) => {
   const large = req.path === '/api/templates/extract'
     || req.path === '/api/assets'
     || req.path === '/api/materials'
-    || req.path.startsWith('/api/agent/')
+    || req.path.startsWith('/api/deck/')
     || req.path.startsWith('/api/generate/');
   return (large ? jsonBodyLarge : jsonBody)(req, res, next);
 });
@@ -59,7 +59,7 @@ app.get('/api/templates', (req, res) => {
   res.json({ templates: listDescriptors() });
 });
 
-// 所选主题的创作规格：设计令牌 + 4 个角色原型页 + SVG 创作规则，供用户 Agent 照着画整页 SVG
+// 所选主题的创作规格：设计令牌 + 4 个角色原型页 + SVG 创作规则，供生成引擎照着画整页 SVG
 app.get('/api/templates/:id/spec', wrap(async (req, res) => {
   const theme = loadTheme(req.params.id);
   res.json(buildSpec(theme, loadThemeLayouts(req.params.id)));
@@ -154,31 +154,8 @@ app.post('/api/templates', wrap(async (req, res) => {
   res.json({ id: saveTemplate(stagingId, name), templates: listDescriptors() });
 }));
 
-// ---------- 会话 ----------
-app.get('/api/sessions', (req, res) => {
-  res.json({ sessions: sessions.listSessions() });
-});
-
-app.post('/api/sessions', wrap(async (req, res) => {
-  const session = sessions.createSession(req.body || {});
-  res.json({ id: session.id, session });
-}));
-
-app.get('/api/sessions/:id', wrap(async (req, res) => {
-  res.json(sessions.getSession(req.params.id));
-}));
-
-app.put('/api/sessions/:id', wrap(async (req, res) => {
-  res.json({ session: sessions.updateSession(req.params.id, req.body || {}) });
-}));
-
-app.delete('/api/sessions/:id', wrap(async (req, res) => {
-  sessions.deleteSession(req.params.id);
-  res.json({ ok: true });
-}));
-
 // ---------- 配图 ----------
-// 配图改由用户 Agent 环境供图：Agent 产图 → POST /api/assets（base64/url）→ 存 → 拿 slide.image
+// 配图存储：POST /api/assets（base64/url）→ 存 → 返回可内联的 slide.image 载荷（配图生成未来接入）
 app.post('/api/assets', wrap(async (req, res) => {
   const { data, url, ext } = req.body || {};
   let image;
@@ -195,42 +172,31 @@ app.get('/api/assets/:file', wrap(async (req, res) => {
 }));
 
 // ---------- 素材（阶段0） ----------
-// 浏览器拖拽上传参考素材：base64 存盘（保留原文件名）→ 入队 material-added 通知 Agent 去读。
-// 放进项目目录的素材不走这里——Agent 用自己的文件工具直读。
+// 浏览器拖拽上传参考素材：base64 存盘（保留原文件名）。生成大纲/整册时服务端自动读取文本类素材折进输入。
 app.post('/api/materials', wrap(async (req, res) => {
   const { name, data } = req.body || {};
   if (!data) return res.status(400).json({ error: '请提供文件数据（base64）' });
   const saved = materials.saveMaterial(name, data);
-  relay.enqueueAction({ action: 'material-added', payload: { name: saved.name, path: saved.path } });
   res.json(saved);
 }));
 
-// ---------- Agent 中继：内容源 ----------
-// 整册推送（SVG-as-IR）：逐页归一为一整页 SVG → 存 deck → SSE 推 'deck' 给浏览器内联预览。
-// 不再 resolve/质量校验——SVG 就是最终版式，浏览器预览与 .pptx 导出消费同一份 SVG。
-app.post('/api/agent/deck', wrap(async (req, res) => {
-  const { title, themeId, templateId, slides } = req.body || {};
-  if (!Array.isArray(slides) || slides.length === 0) {
-    return res.status(400).json({ error: '请提供 slides 数组' });
-  }
-  const d = loadDescriptor(themeId || templateId);
-  const total = slides.length;
-  const enriched = slides.map((raw, index) => normalize.normalizeSlide(raw, index, total));
-  const version = relay.setDeck({ title: title || '', templateId: d._id, canvas: d.canvas, slides: enriched });
-  res.json({
-    themeId: d._id,
-    canvas: d.canvas,
-    slides: enriched,
-    recovered: enriched.map((s, i) => (s._recovered ? i : -1)).filter((i) => i >= 0),
-    version,
-  });
-}));
+// ---------- 演示态读取（浏览器刷新/重连恢复用） ----------
+app.get('/api/deck', (req, res) => {
+  res.json(relay.getState());
+});
 
-// 单页推送：Agent 逐页流式生成（复刻旧 SSE 的逐页体验）；单页粒度写入，不覆盖整册
-app.post('/api/agent/slide', wrap(async (req, res) => {
-  const { index, slide: raw, themeId, templateId } = req.body || {};
+app.get('/api/doc', (req, res) => {
+  res.json(relay.getDoc());
+});
+
+// ---------- 浏览器就地编辑 ----------
+// 把改后的整页 SVG 归一清洗后落权威 deck 并广播（预览==导出消费同一份）。
+app.post('/api/deck/slide', wrap(async (req, res) => {
+  const { index, svg, slide: rawSlide, themeId, templateId } = req.body || {};
   const idx = Number(index);
   if (!(idx >= 0)) return res.status(400).json({ error: 'index 非法' });
+  const raw = (svg !== undefined) ? { svg } : rawSlide;
+  if (!raw) return res.status(400).json({ error: '缺少 svg' });
   const state = relay.getState();
   const d = loadDescriptor(themeId || templateId || state.templateId);
   const total = Math.max(state.slides.length, idx + 1);
@@ -239,61 +205,9 @@ app.post('/api/agent/slide', wrap(async (req, res) => {
   res.json({ index: idx, slide, canvas: d.canvas, version });
 }));
 
-// 推内容大纲（阶段1）：Markdown 归一清洗 → 存 doc → SSE 推 'doc' 给浏览器渲染批注。
-// 与幻灯片 deck 完全解耦，不碰 normalizeSlide / 导出路径。
-app.post('/api/agent/outline', wrap(async (req, res) => {
-  const { markdown, title } = req.body || {};
-  if (typeof markdown !== 'string' || !markdown.trim()) {
-    return res.status(400).json({ error: '请提供 markdown 大纲文本' });
-  }
-  const o = normalizeOutline.normalizeOutline({ markdown, title });
-  const version = relay.setDoc({ markdown: o.markdown, title: o.title });
-  res.json({ ...o, version });
-}));
-
-// 长轮询：阻塞直到有人类动作，或 ~25s 超时返回 heartbeat（取代被删的自愈 loop 的协作心跳）
-app.get('/api/agent/next', wrap(async (req, res) => {
-  const t = Number(req.query.timeout);
-  const timeout = Number.isFinite(t) ? Math.min(Math.max(t, 1000), 60000) : 25000;
-  res.json(await relay.waitForAction(timeout));
-}));
-
-// 完整 deck（Agent 重启/重连恢复用）
-app.get('/api/agent/state', (req, res) => {
-  res.json(relay.getState());
-});
-
-// 当前内容大纲快照（Agent 重连恢复用）
-app.get('/api/agent/doc', (req, res) => {
-  res.json(relay.getDoc());
-});
-
-// 浏览器把人类动作入队给 Agent；有副作用的动作先落权威 deck，避免被 Agent 下次 push 覆盖
-app.post('/api/agent/action', wrap(async (req, res) => {
-  const { action, payload = {} } = req.body || {};
-  if (!action) return res.status(400).json({ error: '缺少 action' });
-  if ((action === 'template-pick' || action === 'theme-pick') && (payload.themeId || payload.templateId)) {
-    relay.setTemplate(payload.themeId || payload.templateId);
-  } else if (action === 'edit' && Number(payload.index) >= 0 && payload.slide) {
-    // 浏览器直接编辑：把改后的整页 SVG 归一清洗后落回权威 deck
-    const state = relay.getState();
-    const d = loadDescriptor(payload.themeId || payload.templateId || state.templateId);
-    const idx = Number(payload.index);
-    const total = Math.max(state.slides.length, idx + 1);
-    const slide = normalize.normalizeSlide(payload.slide, idx, total);
-    relay.setSlide(idx, slide, d.canvas);
-  } else if (action === 'outline-annotate') {
-    // 批注批次：用当前权威 doc 校验清洗，剔除已失效引用，再交给 Agent 长轮询取走
-    payload.comments = normalizeOutline.normalizeComments(payload.comments, relay.getDoc().markdown);
-  }
-  // outline-finalize / material-added 等无副作用动作：直接入队即可
-  const item = relay.enqueueAction({ action, payload });
-  res.json({ ok: true, seq: item.seq, version: item.version });
-}));
-
 // ---------- 模型供应商（多供应商 × 多模型 × 能力绑定） ----------
-// 有绑定「文本」默认模型（或 OPENAI_* 环境变量）即「server-gen 模式」，供纯人类用户无 Agent 也能出稿。
-// 生成结果一律经既有 normalizeOutline + relay.setDoc 落库，preview==export 与 SSE 完全不变。
+// 有绑定「文本」默认模型（或 OPENAI_* 环境变量）即可生成大纲与整册。
+// 生成结果一律经既有 normalizeOutline / normalizeSlide + relay 落库，preview==export 与 SSE 完全不变。
 
 // 一次性拉取设置面板所需全部数据：能力枚举 + 供应商模板（投影）+ 已配实例 + 能力绑定
 app.get('/api/providers', (req, res) => {
@@ -367,7 +281,7 @@ app.post('/api/active', wrap(async (req, res) => {
 }));
 
 // 生成 / 修订内容大纲：带 comments → 批注改稿（复用 normalizeComments 剔除失效引用）；否则按 topic 首次生成。
-// 归一后写权威 doc → SSE 'doc' 推浏览器，走与 Agent 推大纲同一条 relay 路径。改稿不依赖任何人轮询 next。
+// 归一后写权威 doc → SSE 'doc' 推浏览器实时渲染。
 app.post('/api/generate/outline', wrap(async (req, res) => {
   if (!llmprovider.listActive().chat) {
     return res.status(400).json({ error: '尚未配置模型：请打开右上角「模型设置」添加供应商并绑定「文本」默认模型' });
@@ -376,11 +290,11 @@ app.post('/api/generate/outline', wrap(async (req, res) => {
   let markdown;
   if (Array.isArray(comments) && comments.length) {
     const cur = relay.getDoc().markdown;
-    const clean = normalizeOutline.normalizeComments(comments, cur); // 与 /api/agent/action 同一清洗
+    const clean = normalizeOutline.normalizeComments(comments, cur); // 剔除已失效引用（quote 不在当前大纲中）
     if (clean.length === 0) return res.status(400).json({ error: '批注均已失效（引用不在当前大纲中）' });
     markdown = await genOutline.reviseOutline({ markdown: cur, comments: clean });
   } else {
-    // server-gen：把已上传的文本类素材内容折进生成输入（纯人类无 Agent 读素材，故服务端自己读）
+    // 把已上传的文本类素材内容折进生成输入（服务端自己读素材）
     const mat = materials.readMaterialsText();
     const merged = [pastedMaterials, mat.text].filter(Boolean).join('\n\n') || undefined;
     markdown = await genOutline.generateOutline({ topic, pages, materials: merged });
@@ -388,6 +302,70 @@ app.post('/api/generate/outline', wrap(async (req, res) => {
   const o = normalizeOutline.normalizeOutline({ markdown });
   const version = relay.setDoc({ markdown: o.markdown, title: o.title });
   res.json({ ...o, version });
+}));
+
+// 按主题 + 定稿大纲，逐页流式生成整册 SVG。大纲取自当前权威 doc；每页 setSlide → SSE 'slide' 实时冒页。
+app.post('/api/generate/deck', wrap(async (req, res) => {
+  if (!llmprovider.listActive().chat) {
+    return res.status(400).json({ error: '尚未配置模型：请打开右上角「模型设置」添加供应商并绑定「文本」默认模型' });
+  }
+  const { themeId, templateId } = req.body || {};
+  const md = relay.getDoc().markdown;
+  if (!md || !md.trim()) return res.status(400).json({ error: '还没有内容大纲，请先在阶段1 生成并定稿' });
+  const theme = loadTheme(themeId || templateId);
+  const spec = buildSpec(theme, loadThemeLayouts(theme.id));
+  const { title, sections } = genDeck.splitOutline(md);
+  const total = sections.length;
+
+  genDeck.acquire();
+  try {
+    // 先落空册（含 title/templateId/canvas），浏览器据此切到出片步等待逐页冒出
+    relay.setDeck({ title, templateId: theme.id, canvas: theme.canvas, slides: [] });
+    const recovered = [];
+    for (let i = 0; i < total; i++) {
+      const s = sections[i];
+      const svg = await genDeck.generateSlideSvg({
+        docTitle: title, section: s, role: s.role, index: i, total, spec,
+      });
+      const slide = normalize.normalizeSlide({ svg, role: s.role, title: s.heading }, i, total);
+      if (slide._recovered) recovered.push(i);
+      relay.setSlide(i, slide, theme.canvas);
+    }
+    res.json({ themeId: theme.id, pages: total, recovered });
+  } finally {
+    genDeck.release();
+  }
+}));
+
+// 单页重生成：按当前大纲第 index 段重画（可带 feedback 修改意见）→ setSlide 覆盖该页。
+app.post('/api/generate/slide', wrap(async (req, res) => {
+  if (!llmprovider.listActive().chat) {
+    return res.status(400).json({ error: '尚未配置模型：请打开右上角「模型设置」添加供应商并绑定「文本」默认模型' });
+  }
+  const { index, feedback, themeId, templateId } = req.body || {};
+  const idx = Number(index);
+  if (!(idx >= 0)) return res.status(400).json({ error: 'index 非法' });
+  const md = relay.getDoc().markdown;
+  if (!md || !md.trim()) return res.status(400).json({ error: '还没有内容大纲' });
+  const state = relay.getState();
+  const theme = loadTheme(themeId || templateId || state.templateId);
+  const spec = buildSpec(theme, loadThemeLayouts(theme.id));
+  const { title, sections } = genDeck.splitOutline(md);
+  const total = Math.max(sections.length, idx + 1);
+  const section = sections[idx];
+  if (!section) return res.status(400).json({ error: `大纲中没有第 ${idx + 1} 页对应的内容` });
+
+  genDeck.acquire();
+  try {
+    const svg = await genDeck.generateSlideSvg({
+      docTitle: title, section, role: section.role, index: idx, total, spec, feedback,
+    });
+    const slide = normalize.normalizeSlide({ svg, role: section.role, title: section.heading }, idx, total);
+    relay.setSlide(idx, slide, theme.canvas);
+    res.json({ index: idx, recovered: slide._recovered ? [idx] : [] });
+  } finally {
+    genDeck.release();
+  }
 }));
 
 // ---------- 浏览器：服务器推送（SSE） ----------

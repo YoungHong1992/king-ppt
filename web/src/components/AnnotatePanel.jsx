@@ -1,9 +1,10 @@
 import React, { useState } from 'react';
 
-// 批注面板（人 → Agent 往返）：把「对当前页/整册的自然语言修改意见」入队给用户 Agent。
-// 这不是本地编辑——它请求 Agent 重新创作。Agent 长轮询取走后重画该页/整册并回推 SSE。
+// 修改面板（出片阶段）：对「当前选中页」提自然语言修改意见，服务端按意见重画该页（regenSlide）。
+// 与就地编辑不同——这是让 AI 重新创作整页版式；结果经 SSE 覆盖该页。
 export default function AnnotatePanel({ activeIndex, hasSlides, busy, onAnnotate, onRegenerate }) {
   const [text, setText] = useState('');
+  const hasPage = hasSlides && activeIndex >= 0;
 
   const submit = () => {
     const t = text.trim();
@@ -15,23 +16,23 @@ export default function AnnotatePanel({ activeIndex, hasSlides, busy, onAnnotate
   return (
     <div className="annotate">
       <div className="annotate-head">
-        <span>批注 · 交给 Agent</span>
-        {hasSlides && activeIndex >= 0 ? <span className="annotate-scope">当前第 {activeIndex + 1} 页</span> : null}
+        <span>AI 修改本页</span>
+        {hasPage ? <span className="annotate-scope">当前第 {activeIndex + 1} 页</span> : null}
       </div>
       <textarea
         className="annotate-input"
         rows={3}
         value={text}
-        placeholder={'对这一页或整册提修改意见，交给 Agent 重画\n例：把这页配色改成更冷静的蓝灰，标题再大一点'}
+        placeholder={'对当前页提修改意见，AI 按意见重画\n例：把这页配色改成更冷静的蓝灰，标题再大一点'}
         onChange={(e) => setText(e.target.value)}
         onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(); } }}
       />
       <div className="annotate-actions">
-        <button className="btn btn-primary" disabled={busy || !text.trim()} onClick={submit}>
-          发送批注
+        <button className="btn btn-primary" disabled={busy || !hasPage || !text.trim()} onClick={submit}>
+          按意见重画
         </button>
-        {hasSlides && activeIndex >= 0 ? (
-          <button className="btn" disabled={busy} onClick={() => onRegenerate(activeIndex)} title="让 Agent 重画当前页">
+        {hasPage ? (
+          <button className="btn" disabled={busy} onClick={() => onRegenerate(activeIndex)} title="不加意见，直接重画当前页">
             重画本页
           </button>
         ) : null}

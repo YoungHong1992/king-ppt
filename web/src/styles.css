@@ -183,15 +183,23 @@ body {
 
 /* ============ 阶段1：内容大纲 ============ */
 
-/* 顶栏阶段切换（分段控件） */
-.seg { display: inline-flex; background: #eef0f3; border-radius: 8px; padding: 3px; gap: 2px; }
-.seg-btn {
+/* 顶栏步骤指示器（① 内容大纲 → ② 选择模板 → ③ 幻灯片） */
+.stepper { display: inline-flex; align-items: center; gap: 4px; }
+.step {
+  display: inline-flex; align-items: center; gap: 7px;
   border: none; background: transparent; color: var(--muted);
-  padding: 5px 14px; border-radius: 6px; font-size: 13px; cursor: pointer;
-  transition: background .15s, color .15s; font-family: inherit;
+  padding: 5px 12px; border-radius: 8px; font-size: 13px; cursor: pointer;
+  font-family: inherit; transition: background .15s, color .15s;
 }
-.seg-btn:hover { color: var(--text); }
-.seg-btn.on { background: #fff; color: var(--primary); font-weight: 600; box-shadow: 0 1px 2px rgba(0,0,0,.08); }
+.step:hover:not(.locked) { color: var(--text); background: #f3f4f6; }
+.step.on { color: var(--primary); font-weight: 600; }
+.step.locked { opacity: .45; cursor: not-allowed; }
+.step-no {
+  width: 20px; height: 20px; border-radius: 50%; flex-shrink: 0;
+  display: grid; place-items: center; font-size: 12px; font-weight: 700;
+  background: #e5e7eb; color: var(--muted); transition: background .15s, color .15s;
+}
+.step.on .step-no { background: var(--primary); color: #fff; }
 
 /* 素材拖放区（左栏） */
 .mat-drop {
@@ -451,3 +459,46 @@ body {
 .chip-dot { width: 7px; height: 7px; border-radius: 50%; background: #d97706; flex-shrink: 0; }
 .chip-dot.ok { background: var(--ok); }
 .model-info { font-size: 12px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* 左栏提示（未配模型时） */
+.rail-tip { font-size: 11px; color: var(--muted); line-height: 1.5; }
+
+/* ============ 阶段2：选择模板 ============ */
+.stage-theme { align-items: stretch; }
+.theme-pick-head { text-align: center; margin-bottom: 8px; }
+.theme-pick-title { font-size: 20px; font-weight: 700; }
+.theme-pick-sub { font-size: 13px; color: var(--muted); margin-top: 6px; }
+.theme-pick-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 18px; width: 100%; max-width: 900px; margin: 8px auto 0;
+}
+.theme-pick-card {
+  border: 1.5px solid var(--border); border-radius: 14px; padding: 12px;
+  background: #fff; cursor: pointer; display: flex; flex-direction: column; gap: 10px;
+  transition: border-color .15s, transform .1s, box-shadow .15s;
+}
+.theme-pick-card:hover { border-color: var(--primary); transform: translateY(-2px); box-shadow: var(--shadow); }
+.theme-pick-card.active { border-color: var(--primary); box-shadow: 0 0 0 2px rgba(99,102,241,.18); }
+.theme-pick-swatch { height: 108px; border-radius: 9px; }
+.theme-pick-name { font-size: 14px; font-weight: 600; text-align: center; }
+
+/* 模板预览弹层 */
+.modal-overlay { position: fixed; inset: 0; z-index: 80; background: rgba(15,18,26,.5); display: grid; place-items: center; padding: 24px; animation: pv-fadeup .12s ease; }
+.theme-preview {
+  width: 920px; max-width: 100%; max-height: calc(100vh - 48px);
+  background: var(--panel); border-radius: 16px; box-shadow: var(--shadow);
+  display: flex; flex-direction: column; overflow: hidden; animation: pv-pop .18s ease;
+}
+.theme-preview-head { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; border-bottom: 1px solid var(--border); }
+.theme-preview-title { font-size: 16px; font-weight: 700; }
+.theme-preview-msg { padding: 44px; text-align: center; color: var(--muted); font-size: 14px; }
+.theme-preview-msg.err { color: var(--error); }
+.theme-preview-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 20px; overflow-y: auto; }
+.theme-preview-cell { margin: 0; display: flex; flex-direction: column; gap: 6px; }
+.theme-preview-canvas { border-radius: 10px; }
+.theme-preview-cell figcaption { font-size: 12px; color: var(--muted); text-align: center; }
+.theme-preview-foot { display: flex; justify-content: flex-end; gap: 10px; padding: 14px 20px; border-top: 1px solid var(--border); }
+.theme-preview-foot .btn { min-width: 100px; }
+
+/* 出片：未能正确生成的坏页提示 */
+.slide-recovered { margin-top: 8px; font-size: 12.5px; color: var(--error); text-align: center; }
