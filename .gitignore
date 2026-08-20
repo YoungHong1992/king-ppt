@@ -8,6 +8,9 @@ node_modules/
 .king-ppt-*/
 *.serve.log
 
+# 内置生成的 provider 配置（含明文 API Key）。兜底：即便 KING_PPT_HOME 指向非 .king-ppt 前缀目录也不入库
+**/config.json
+
 # 参考项目（各自独立 git 仓库，仅供本地对照，不纳入本仓库）
 dashi-ppt-skill/
 ppt-master/

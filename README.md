@@ -97,5 +97,8 @@ docs/                  # 设计文档
 | `PORT` | 否 | `3210` | 服务端口 |
 | `KING_PPT_PORT` | 否 | — | CLI 定位服务端口的覆盖项 |
 | `KING_PPT_CHROME` | 否 | — | 旧版 free-HTML 页导出所需的 Chrome/Edge 可执行文件路径 |
+| `OPENAI_API_KEY` | 否 | — | **内置生成（可选）**的 env 回退 Key；设置面板（⚙）配置优先。配了 Key 才启用「server-gen 模式」，让纯人类用户无需 Agent 也能生成/改稿阶段1 大纲 |
+| `OPENAI_BASE_URL` | 否 | `https://api.openai.com/v1` | 内置生成的 OpenAI 兼容端点（env 回退；缺 `/v1` 会自动探测补全） |
+| `OPENAI_MODEL` | 否 | `gpt-4o-mini` | 内置生成的模型名（env 回退） |
 
 要求 Node ≥ 18（使用全局 `fetch`）。

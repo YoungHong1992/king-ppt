@@ -5,6 +5,7 @@
 // Node 单线程 + 路由内同步 read-modify-write 单页 → Agent push 与人类 edit 并发不丢更新。
 function createRelay() {
   const deck = { title: '', templateId: null, canvas: null, slides: [], version: 0 };
+  const doc = { markdown: '', title: '', version: 0 }; // 阶段1：内容大纲镜像，与 deck 并列、独立 version
   const subscribers = new Set(); // SSE 响应对象（浏览器侧）
   const queue = [];              // 待 Agent 消费的人类动作
   const waiters = [];            // 阻塞在 next 上的 { resolve, timer }
@@ -44,6 +45,21 @@ function createRelay() {
   function setTemplate(templateId) {
     deck.templateId = templateId;
     return bump();
+  }
+
+  // ---------- 内容大纲镜像（阶段1） ----------
+  // deck 是幻灯片；doc 是 Markdown 内容底稿。二者共用 SSE 总线与动作队列，但各自独立 version。
+  function getDoc() {
+    return { markdown: doc.markdown, title: doc.title, version: doc.version };
+  }
+
+  // Agent 推大纲：改字段 → 自增 doc.version → SSE 广播 'doc' → 返回 version
+  function setDoc({ markdown, title }) {
+    if (markdown !== undefined) doc.markdown = markdown;
+    if (title !== undefined) doc.title = title;
+    doc.version += 1;
+    broadcast('doc', getDoc());
+    return doc.version;
   }
 
   function reset({ title = '', templateId = null } = {}) {
@@ -107,6 +123,7 @@ function createRelay() {
 
   return {
     getState, setDeck, setSlide, setTemplate, reset,
+    getDoc, setDoc,
     subscribe, broadcast, pingAll,
     enqueueAction, waitForAction, pendingCount,
   };

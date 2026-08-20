@@ -9,7 +9,9 @@ const HOME = process.env.KING_PPT_HOME
 
 const SESSIONS_DIR = path.join(HOME, 'sessions');
 const ASSETS_DIR = path.join(HOME, 'assets');
+const MATERIALS_DIR = path.join(HOME, 'materials'); // 阶段0：用户拖入的参考素材（保留原文件名，供 Agent 直读）
 const TEMPLATES_DIR = path.join(HOME, 'templates'); // 上传/自定义模板
 const RUNTIME_FILE = path.join(HOME, 'server.json'); // serve 写入 { port, pid }，供 CLI 子命令定位
+const CONFIG_FILE = path.join(HOME, 'config.json'); // 单 provider 配置（含 API Key；.gitignore 已排除 .king-ppt/）
 
-module.exports = { HOME, SESSIONS_DIR, ASSETS_DIR, TEMPLATES_DIR, RUNTIME_FILE };
+module.exports = { HOME, SESSIONS_DIR, ASSETS_DIR, MATERIALS_DIR, TEMPLATES_DIR, RUNTIME_FILE, CONFIG_FILE };

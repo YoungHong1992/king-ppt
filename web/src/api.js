@@ -22,8 +22,19 @@ export const api = {
   listThemes: () => req('/api/templates'),
   themeSpec: (id) => req(`/api/templates/${encodeURIComponent(id)}/spec`),
   state: () => req('/api/agent/state'),
+  doc: () => req('/api/agent/doc'),
   // 浏览器把人类动作交给 Agent。有副作用动作服务端会先落 deck。
   action: (action, payload = {}) => req('/api/agent/action', { method: 'POST', body: { action, payload } }),
+  // 阶段0：上传参考素材（base64）；服务端存盘并入队 material-added 通知 Agent
+  uploadMaterial: (name, data) => req('/api/materials', { method: 'POST', body: { name, data } }),
+  // 内置生成（阶段1，server-gen 模式）：配置读写/测试 + 生成/改稿大纲。生成结果经 SSE 'doc' 回来。
+  getConfig: () => req('/api/config'),
+  saveConfig: (cfg) => req('/api/config', { method: 'POST', body: cfg }),
+  testConfig: (cfg) => req('/api/config/test', { method: 'POST', body: cfg }),
+  generateOutline: ({ topic, pages, materials } = {}) =>
+    req('/api/generate/outline', { method: 'POST', body: { topic, pages, materials } }),
+  reviseOutline: (comments) =>
+    req('/api/generate/outline', { method: 'POST', body: { comments } }),
   // 导出当前 deck 为 .pptx（返回 Blob）
   async export(slides, title, themeId) {
     const resp = await req('/api/export', { method: 'POST', raw: true, body: { slides, title, themeId } });
@@ -31,11 +42,12 @@ export const api = {
   },
 };
 
-// SSE 订阅：deck（整册）/ slide（单页）。返回取消函数。自动重连由浏览器按 retry 处理。
-export function subscribe({ onDeck, onSlide, onError }) {
+// SSE 订阅：deck（整册）/ slide（单页）/ doc（内容大纲）。返回取消函数。自动重连由浏览器按 retry 处理。
+export function subscribe({ onDeck, onSlide, onDoc, onError }) {
   const es = new EventSource('/api/stream');
   es.addEventListener('deck', (e) => { try { onDeck(JSON.parse(e.data)); } catch { /* 忽略坏帧 */ } });
   es.addEventListener('slide', (e) => { try { onSlide(JSON.parse(e.data)); } catch { /* 忽略坏帧 */ } });
+  if (onDoc) es.addEventListener('doc', (e) => { try { onDoc(JSON.parse(e.data)); } catch { /* 忽略坏帧 */ } });
   es.onerror = () => { if (onError) onError(); };
   return () => es.close();
 }

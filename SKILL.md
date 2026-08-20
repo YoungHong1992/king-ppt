@@ -30,6 +30,32 @@ Your job: start the studio → pick a theme and read its **spec** (tokens + role
 
 You and the human take turns. **You always push first** (so the human has something to look at), then call `next` to hand control over and wait. This turn-based loop replaces any self-healing generation loop — the human is in the loop instead.
 
+> **Built-in generation (optional, for pure-human use):** if no Agent is available, a human can configure a single OpenAI-compatible provider in the studio's settings (⚙) and generate/revise the **Phase-1 outline** server-side. This is an additive *alternative* brain — it writes through the same relay + validators and does **not** change the Agent-driven flow above. As the calling Agent, you author content yourself and can ignore it.
+
+---
+
+## The standardized 2-phase flow (do these in order)
+
+Before you draw a single slide, settle **what the deck will say**. The skill is built around two phases plus an optional material-gathering step:
+
+**Phase 0 · Gather material (optional).** Get the raw input first — the human may (a) just tell you the topic/requirements, (b) drop reference files into a project directory, or (c) ask you to research. Two channels reach you:
+- **Project directory `./inputs/`** — a pure convention, no server code. If the human says they put files there, read them yourself with your own file tools (Glob/Read). Also honor any path the human names.
+- **Browser drag-drop** — when the human drags a file onto the studio's outline view, you receive a `material-added` action `{name, path}`. Read that absolute `path` with your own tools and fold it into your drafting.
+
+**Phase 1 · Confirm the content outline.** Digest the material into a structured **Markdown outline** — title + goal/audience + per-section headings & bullet items = *what you'll actually say on each page*. This is content only, **no visual design yet**. Push it with `push-outline`; the human reads it in the browser and **annotates by selecting text** (Confluence/Notion style), accumulates a batch, and sends it. You get one `outline-annotate` action carrying all the comments, revise the markdown, `push-outline` again, and loop until the human clicks 定稿 → you receive `outline-finalize`. **The finalized markdown is the frozen content baseline.**
+
+**Phase 2 · Author the slides.** Only now open the SVG deck flow below: pick a theme, read its `spec`, and turn each section of the finalized outline into a full-page SVG, `push`, iterate, export. Everything from "The collaboration loop" onward is Phase 2 and is unchanged.
+
+> Why the split: deciding *what to say* (fast, text, cheap to revise) before *how it looks* (SVG layout) keeps rework cheap and gives the human a clean approval gate. Phase 1 never touches the deck/SVG/export path — `preview == export` is a Phase-2 guarantee, untouched.
+
+### Phase-1 collaboration loop (mirrors the Phase-2 loop)
+
+1. Draft the Markdown outline from your material.
+2. `node bin/cli.js push-outline outline.md` (or `… push-outline -` via stdin) — the human sees the rendered doc instantly.
+3. `node bin/cli.js next` — block for the human's action.
+4. React: on `outline-annotate`, address every comment (`quote` locates the exact text, `block` is a coarse section hint), rewrite the markdown, `push-outline` again. On `material-added`, read the file and re-draft. On `outline-finalize`, freeze the markdown and move to Phase 2.
+5. Loop 3–4 until `outline-finalize`.
+
 ---
 
 ## Setup — start the studio (once per session)
@@ -74,6 +100,9 @@ When done: `node bin/cli.js stop`.
 | `edit` | `{index, slide}` | Edited text **in-place** on page `index`. The server **already applied** it authoritatively (re-sanitized SVG in `slide.svg`) — just absorb it into your working copy; only re-push if you further change it. |
 | `regen` | `{index, feedback?}` | Wants page `index` redrawn. Re-author that page's SVG, `push-slide index`. |
 | `theme-pick` | `{themeId}` | Switched theme. **Re-fetch `spec`** for the new theme and redraw pages using the new tokens (colors/scale/geometry change; your SVG structure can stay). |
+| `outline-annotate` | `{comments:[{id,block,quote,comment}]}` | **(Phase 1)** Sent a batch of text-selection comments on the outline. Address each (`quote` = the exact selected text and the durable anchor; `block` = section-index hint), revise the markdown, then `push-outline` again. |
+| `outline-finalize` | `{}` | **(Phase 1)** Clicked 定稿. Freeze the current markdown as the content baseline and move to Phase 2 (author the SVG deck from it). |
+| `material-added` | `{name, path}` | **(Phase 0)** Dropped a reference file in the browser. Read it from the absolute `path` with your own file tools and fold it into your drafting. |
 | `heartbeat` | `{version}` | ~25s passed with no action. Just call `next` again (or do other work). |
 
 **No deadlock:** you push before you wait, so the human always has content to act on; the queue delivers their action instantly, else `next` returns a heartbeat. Never block on `next` before your first push.
@@ -136,6 +165,7 @@ All commands print JSON to stdout; errors go to stderr with a non-zero exit. The
 | `stop` | Stop the running server. |
 | `templates` | List available themes `{id, name, source, palette}`. |
 | `spec <themeId>` | Authoring spec: design tokens, 4 role prototype SVGs, SVG rules. |
+| `push-outline [file.md\|-]` | **(Phase 1)** Push a Markdown content outline (file or stdin; `--title=` optional). Returns `{type:'outline', markdown, title, version}`. Rendered in the browser for text-selection annotation. |
 | `push [deck.json]` | Push a whole deck `{title, themeId, slides:[{svg,role?,title?}]}` (file or stdin). Returns `{themeId, canvas, slides, recovered, version}`. |
 | `push-slide <index> [slide.json]` | Push one page `{svg}` (streaming feel). File/stdin. |
 | `next [--timeout=ms]` | Long-poll the next human action (blocks; ~25s heartbeat). |
@@ -189,3 +219,4 @@ node bin/cli.js export ./时间管理分享.pptx
 - **Native, editable output.** `<rect>/<text>/<path>/<image>` become real PowerPoint shapes, text runs, custom-geometry paths, and pictures — fully editable in PowerPoint, no rasterization, no Chrome.
 - **Themes carry the design system.** A theme is a token pack (`theme.json`: palette + type scale + geometry). Uploading a `.pptx` in the browser extracts its palette/fonts into a usable theme that appears in `templates`; you author against it identically.
 - **`recovered` on push** lists page indices whose SVG failed to parse and were replaced with a blank fallback — redraw those. Keep your working copy in sync with `state` after `edit`/`theme-pick`, since the server may have applied changes authoritatively.
+- **Phase-1 outline (`push-outline`) is v1.** The outline lives in the in-memory relay just like the deck — you (the Agent) hold the authoritative markdown in your context and can always re-push. Known future work, not yet implemented: persisting the outline to a session file; a server-side finalize freeze flag; Markdown links/images/tables and multi-level nested lists in the browser renderer (current subset: `#`/`##`/`###`, `-`/`*` & `1.` lists, `**bold**`/`*italic*`/`` `code` ``, `>` quote, ``` fences, `---`). The renderer HTML-escapes all text and emits no `<a>`/`<img>`, so annotated outlines are safe to render.

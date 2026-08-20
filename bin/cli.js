@@ -78,6 +78,13 @@ function readJsonInput(file) {
   try { return JSON.parse(text); } catch (e) { die(`JSON 解析失败：${e.message}`); }
 }
 
+// 读入纯文本（Markdown 大纲）：文件路径，或 `-`/空 读 stdin（支持管道）
+function readTextInput(file) {
+  const text = (file && file !== '-') ? fs.readFileSync(file, 'utf8') : fs.readFileSync(0, 'utf8');
+  if (!text.trim()) die('未提供 Markdown 输入（给出 .md 文件路径，或用 - 经 stdin 传入）。');
+  return text;
+}
+
 const COMMANDS = {
   // 前台启动中继服务器 + 开浏览器。Agent 应以后台任务方式运行此命令保活。
   async serve(opts) {
@@ -133,6 +140,13 @@ const COMMANDS = {
     out(await req(baseUrl(opts), '/api/agent/slide', { method: 'POST', body }));
   },
 
+  // 推内容大纲（阶段1）：king-ppt push-outline [file.md|-] [--title=标题]
+  async 'push-outline'(opts, positional) {
+    const markdown = readTextInput(positional[0]);
+    const body = { markdown, ...(opts.title ? { title: String(opts.title) } : {}) };
+    out(await req(baseUrl(opts), '/api/agent/outline', { method: 'POST', body }));
+  },
+
   // 长轮询下一个人类动作（阻塞至有动作或 ~25s 心跳）
   async next(opts) {
     const timeout = opts.timeout ? `?timeout=${Number(opts.timeout)}` : '';
@@ -183,6 +197,7 @@ async function main() {
       '  spec <templateId>              某主题的创作规格（设计令牌 + 角色原型页 + SVG 规则）',
       '  push [deck.json]               推整册 {title,themeId,slides:[{svg}]}（stdin 或文件）→ 实时预览',
       '  push-slide <index> [s.json]    推单页 {svg}（逐页流式）',
+      '  push-outline [file.md|-]       推 Markdown 内容大纲（阶段1）→ 浏览器渲染批注（--title= 可选）',
       '  next [--timeout=ms]            长轮询下一个人类动作（阻塞）',
       '  state                          当前 deck 快照',
       '  asset --file=|--data=|--url=   供图，返回 slide.image 载荷',

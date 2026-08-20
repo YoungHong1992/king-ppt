@@ -9,9 +9,14 @@ const { extractFromPptx, saveTemplate } = require('./extract');
 const { parseSourcePages } = require('./pptx-pages');
 const sessions = require('./sessions');
 const normalize = require('./normalize');
+const normalizeOutline = require('./normalize-outline');
+const materials = require('./materials');
 const { buildSpec } = require('./spec');
 const { createRelay } = require('./relay');
 const { RUNTIME_FILE } = require('./paths');
+const config = require('./config');
+const llm = require('./llm');
+const genOutline = require('./generate-outline');
 
 const app = express();
 const relay = createRelay(); // Agent ↔ 浏览器 的有状态中继（deck 存储 + 事件总线 + 动作队列）
@@ -22,7 +27,9 @@ const jsonBodyLarge = express.json({ limit: '30mb' });
 app.use((req, res, next) => {
   const large = req.path === '/api/templates/extract'
     || req.path === '/api/assets'
-    || req.path.startsWith('/api/agent/');
+    || req.path === '/api/materials'
+    || req.path.startsWith('/api/agent/')
+    || req.path.startsWith('/api/generate/');
   return (large ? jsonBodyLarge : jsonBody)(req, res, next);
 });
 app.use(express.static(path.join(__dirname, '..', 'public')));
@@ -30,6 +37,9 @@ app.use(express.static(path.join(__dirname, '..', 'public')));
 function statusOf(err) {
   if (err.code === 'SESSION_NOT_FOUND' || err.code === 'ASSET_NOT_FOUND') return 404;
   if (err.code === 'BAD_SESSION_ID' || err.code === 'BAD_ASSET_NAME') return 400;
+  if (err.code === 'BAD_INPUT' || err.code === 'NO_API_KEY' || err.code === 'NO_MODEL_CONFIG') return 400;
+  if (err.code === 'BUSY') return 409;
+  if (err.code === 'LLM_HTTP' || err.code === 'LLM_EMPTY' || err.code === 'LLM_TIMEOUT') return 502; // 上游模型错误
   return 500;
 }
 
@@ -184,6 +194,17 @@ app.get('/api/assets/:file', wrap(async (req, res) => {
   res.sendFile(full);
 }));
 
+// ---------- 素材（阶段0） ----------
+// 浏览器拖拽上传参考素材：base64 存盘（保留原文件名）→ 入队 material-added 通知 Agent 去读。
+// 放进项目目录的素材不走这里——Agent 用自己的文件工具直读。
+app.post('/api/materials', wrap(async (req, res) => {
+  const { name, data } = req.body || {};
+  if (!data) return res.status(400).json({ error: '请提供文件数据（base64）' });
+  const saved = materials.saveMaterial(name, data);
+  relay.enqueueAction({ action: 'material-added', payload: { name: saved.name, path: saved.path } });
+  res.json(saved);
+}));
+
 // ---------- Agent 中继：内容源 ----------
 // 整册推送（SVG-as-IR）：逐页归一为一整页 SVG → 存 deck → SSE 推 'deck' 给浏览器内联预览。
 // 不再 resolve/质量校验——SVG 就是最终版式，浏览器预览与 .pptx 导出消费同一份 SVG。
@@ -218,6 +239,18 @@ app.post('/api/agent/slide', wrap(async (req, res) => {
   res.json({ index: idx, slide, canvas: d.canvas, version });
 }));
 
+// 推内容大纲（阶段1）：Markdown 归一清洗 → 存 doc → SSE 推 'doc' 给浏览器渲染批注。
+// 与幻灯片 deck 完全解耦，不碰 normalizeSlide / 导出路径。
+app.post('/api/agent/outline', wrap(async (req, res) => {
+  const { markdown, title } = req.body || {};
+  if (typeof markdown !== 'string' || !markdown.trim()) {
+    return res.status(400).json({ error: '请提供 markdown 大纲文本' });
+  }
+  const o = normalizeOutline.normalizeOutline({ markdown, title });
+  const version = relay.setDoc({ markdown: o.markdown, title: o.title });
+  res.json({ ...o, version });
+}));
+
 // 长轮询：阻塞直到有人类动作，或 ~25s 超时返回 heartbeat（取代被删的自愈 loop 的协作心跳）
 app.get('/api/agent/next', wrap(async (req, res) => {
   const t = Number(req.query.timeout);
@@ -228,6 +261,11 @@ app.get('/api/agent/next', wrap(async (req, res) => {
 // 完整 deck（Agent 重启/重连恢复用）
 app.get('/api/agent/state', (req, res) => {
   res.json(relay.getState());
+});
+
+// 当前内容大纲快照（Agent 重连恢复用）
+app.get('/api/agent/doc', (req, res) => {
+  res.json(relay.getDoc());
 });
 
 // 浏览器把人类动作入队给 Agent；有副作用的动作先落权威 deck，避免被 Agent 下次 push 覆盖
@@ -244,9 +282,56 @@ app.post('/api/agent/action', wrap(async (req, res) => {
     const total = Math.max(state.slides.length, idx + 1);
     const slide = normalize.normalizeSlide(payload.slide, idx, total);
     relay.setSlide(idx, slide, d.canvas);
+  } else if (action === 'outline-annotate') {
+    // 批注批次：用当前权威 doc 校验清洗，剔除已失效引用，再交给 Agent 长轮询取走
+    payload.comments = normalizeOutline.normalizeComments(payload.comments, relay.getDoc().markdown);
   }
+  // outline-finalize / material-added 等无副作用动作：直接入队即可
   const item = relay.enqueueAction({ action, payload });
   res.json({ ok: true, seq: item.seq, version: item.version });
+}));
+
+// ---------- 内置生成（阶段1）：单一 OpenAI 兼容 provider，供纯人类用户无 Agent 也能出稿 ----------
+// 与 /api/agent/* 关系路径并存：有 key 即「server-gen 模式」，无 key 则前端行为与今日一致。
+// 生成结果一律经既有 normalizeOutline + relay.setDoc 落库，preview==export 与 SSE 完全不变。
+
+// 配置读（前端安全视图，绝不含明文 key）
+app.get('/api/config', (req, res) => {
+  res.json(config.publicView());
+});
+
+// 配置写（浅合并 { baseURL, apiKey, model }；空 apiKey 视为保留原值）
+app.post('/api/config', wrap(async (req, res) => {
+  config.saveConfig(req.body || {});
+  res.json(config.publicView());
+}));
+
+// 连接测试：body 的 { baseURL, apiKey } 优先（存库前先测），否则回退已存配置。/v1 缺失自愈并给出 suggestedBaseURL。
+app.post('/api/config/test', wrap(async (req, res) => {
+  const { baseURL, apiKey } = req.body || {};
+  res.json(await llm.test({ baseURL, apiKey }));
+}));
+
+// 生成 / 修订内容大纲：带 comments → 批注改稿（复用 normalizeComments 剔除失效引用）；否则按 topic 首次生成。
+// 归一后写权威 doc → SSE 'doc' 推浏览器，走与 Agent 推大纲同一条 relay 路径。改稿不依赖任何人轮询 next。
+app.post('/api/generate/outline', wrap(async (req, res) => {
+  if (!config.hasProvider()) return res.status(400).json({ error: '尚未配置模型：请打开右上角设置填写 API Key' });
+  const { topic, pages, materials: pastedMaterials, comments } = req.body || {};
+  let markdown;
+  if (Array.isArray(comments) && comments.length) {
+    const cur = relay.getDoc().markdown;
+    const clean = normalizeOutline.normalizeComments(comments, cur); // 与 /api/agent/action 同一清洗
+    if (clean.length === 0) return res.status(400).json({ error: '批注均已失效（引用不在当前大纲中）' });
+    markdown = await genOutline.reviseOutline({ markdown: cur, comments: clean });
+  } else {
+    // server-gen：把已上传的文本类素材内容折进生成输入（纯人类无 Agent 读素材，故服务端自己读）
+    const mat = materials.readMaterialsText();
+    const merged = [pastedMaterials, mat.text].filter(Boolean).join('\n\n') || undefined;
+    markdown = await genOutline.generateOutline({ topic, pages, materials: merged });
+  }
+  const o = normalizeOutline.normalizeOutline({ markdown });
+  const version = relay.setDoc({ markdown: o.markdown, title: o.title });
+  res.json({ ...o, version });
 }));
 
 // ---------- 浏览器：服务器推送（SSE） ----------
@@ -260,6 +345,8 @@ app.get('/api/stream', (req, res) => {
   res.write('retry: 3000\n\n');
   // 新连接立即得到当前整册（含各页 scene），支持刷新/重连恢复
   res.write(`event: deck\ndata: ${JSON.stringify(relay.getState())}\n\n`);
+  // 同时回放当前内容大纲，后连接的浏览器也能立即拿到阶段1 的 doc
+  res.write(`event: doc\ndata: ${JSON.stringify(relay.getDoc())}\n\n`);
   const unsubscribe = relay.subscribe(res);
   req.on('close', unsubscribe);
 });
