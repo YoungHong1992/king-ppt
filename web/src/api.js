@@ -27,10 +27,18 @@ export const api = {
   action: (action, payload = {}) => req('/api/agent/action', { method: 'POST', body: { action, payload } }),
   // 阶段0：上传参考素材（base64）；服务端存盘并入队 material-added 通知 Agent
   uploadMaterial: (name, data) => req('/api/materials', { method: 'POST', body: { name, data } }),
-  // 内置生成（阶段1，server-gen 模式）：配置读写/测试 + 生成/改稿大纲。生成结果经 SSE 'doc' 回来。
-  getConfig: () => req('/api/config'),
-  saveConfig: (cfg) => req('/api/config', { method: 'POST', body: cfg }),
-  testConfig: (cfg) => req('/api/config/test', { method: 'POST', body: cfg }),
+  // 内置生成（阶段1，server-gen 模式）：多供应商配置读写/测试 + 生成/改稿大纲。生成结果经 SSE 'doc' 回来。
+  getProviders: () => req('/api/providers'),
+  createInstance: (body) => req('/api/instances', { method: 'POST', body }),
+  updateInstance: (id, patch) => req(`/api/instances/${encodeURIComponent(id)}`, { method: 'PUT', body: patch }),
+  deleteInstance: (id) => req(`/api/instances/${encodeURIComponent(id)}`, { method: 'DELETE', body: {} }),
+  testInstance: (id, override = {}) => req(`/api/instances/${encodeURIComponent(id)}/test`, { method: 'POST', body: override }),
+  testModel: (id, model) => req(`/api/instances/${encodeURIComponent(id)}/test-model`, { method: 'POST', body: { model } }),
+  testModels: (id) => req(`/api/instances/${encodeURIComponent(id)}/test-models`, { method: 'POST', body: {} }),
+  remoteModels: (id) => req(`/api/instances/${encodeURIComponent(id)}/remote-models`, { method: 'POST', body: {} }),
+  addModel: (id, model, caps, enabled) => req(`/api/instances/${encodeURIComponent(id)}/models`, { method: 'POST', body: { id: model, caps, enabled } }),
+  removeModel: (id, model) => req(`/api/instances/${encodeURIComponent(id)}/models`, { method: 'DELETE', body: { model } }),
+  setActive: (capability, instance, model) => req('/api/active', { method: 'POST', body: { capability, instance, model } }),
   generateOutline: ({ topic, pages, materials } = {}) =>
     req('/api/generate/outline', { method: 'POST', body: { topic, pages, materials } }),
   reviseOutline: (comments) =>

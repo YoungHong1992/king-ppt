@@ -7,6 +7,7 @@ import ThemeGallery from './components/ThemeGallery.jsx';
 import OutlineView from './components/OutlineView.jsx';
 import OutlineBatchPanel from './components/OutlineBatchPanel.jsx';
 import SettingsPanel from './components/SettingsPanel.jsx';
+import { useAppDialog, AppDialogHost } from './components/AppDialog.jsx';
 
 // 卷王PPT · SVG-as-IR 前端。用户 Agent 是内容源；本页做「内容大纲确认（阶段1）+ 挑主题/实时预览/就地编辑/批注往返/导出（阶段2）」。
 // deck 与 doc 权威都在服务端中继；本页经 SSE 收 deck/slide/doc 事件驱动渲染，经 /api/agent/action 把人类动作交回 Agent。
@@ -21,13 +22,14 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState(null);
   const [connected, setConnected] = useState(false);
-  const [config, setConfig] = useState(null);   // server-gen 配置视图（含 hasKey，不含明文 key）
+  const [providers, setProviders] = useState(null); // 多供应商配置视图（templates/instances/active，不含明文 key）
   const [showSettings, setShowSettings] = useState(false);
   const [topic, setTopic] = useState('');       // 阶段1 主题输入（server-gen 模式）
   const canvasRefs = useRef({});
   const deckVersionRef = useRef(0);
   const docVersionRef = useRef(0);
   const autoPhaseRef = useRef(false); // 是否已按内容自动切过一次阶段（之后以用户手动为准）
+  const dialog = useAppDialog();      // 全站通用确认/输入弹窗（取代原生 confirm）
 
   const flash = useCallback((text, type = 'info') => {
     setToast({ text, type });
@@ -37,7 +39,7 @@ export default function App() {
   // 初始化：拉主题列表 + 当前 deck / doc 快照（刷新/重连恢复）
   useEffect(() => {
     api.listThemes().then((r) => setThemes(r.templates || [])).catch(() => {});
-    api.getConfig().then(setConfig).catch(() => {}); // 有 key → server-gen 模式
+    api.getProviders().then(setProviders).catch(() => {}); // 绑定了 chat 默认模型 → server-gen 模式
     api.state().then((st) => {
       if (st && Array.isArray(st.slides)) {
         deckVersionRef.current = st.version || 0;
@@ -106,7 +108,7 @@ export default function App() {
   const slides = deck.slides.filter(Boolean);
   const hasSlides = slides.length > 0;
   const hasDoc = !!doc.markdown;
-  const serverGen = !!config?.hasKey; // 配了 key = 服务端自带生成，批注走 server-gen 改稿
+  const serverGen = !!providers?.active?.chat; // 绑定了 chat 默认模型 = 服务端自带生成，批注走 server-gen 改稿
 
   // 就地编辑：把改后的整页 SVG 交回 Agent（服务端 sanitize 后落权威 deck 并广播）
   const onEdit = useCallback((index, svg) => {
@@ -176,13 +178,19 @@ export default function App() {
       .finally(() => setBusy(false));
   }, [outlineComments, serverGen, flash]);
 
-  const onFinalize = useCallback(() => {
+  const onFinalize = useCallback(async () => {
+    const ok = await dialog.ask({
+      title: '确认定稿？',
+      body: '将以当前大纲作为内容基线进入出片阶段。',
+      okText: '定稿',
+    });
+    if (!ok) return;
     setBusy(true);
     api.action('outline-finalize', {})
       .then(() => flash(serverGen ? '已定稿（阶段2 出片即将开放）' : '已定稿，Agent 将据此进入出片阶段', 'ok'))
       .catch((e) => flash(`发送失败：${e.message}`, 'error'))
       .finally(() => setBusy(false));
-  }, [serverGen, flash]);
+  }, [serverGen, flash, dialog.ask]);
 
   // 拖拽上传参考素材 → base64 → 上传 → 服务端入队 material-added
   const uploadFiles = useCallback((files) => {
@@ -238,6 +246,10 @@ export default function App() {
         <div className="deck-title">{headerTitle}</div>
         <div className="topbar-right">
           <span className={`conn-dot${connected ? ' on' : ''}`} title={connected ? '已连接中继' : '未连接'} />
+          <button className="model-chip" title="模型设置" onClick={() => setShowSettings(true)}>
+            <span className={`chip-dot${providers?.active?.chat ? ' ok' : ''}`} />
+            <span className="model-info">{providers?.active?.chat ? `${providers.active.chat.instanceName} · ${providers.active.chat.model}` : '未配置模型'}</span>
+          </button>
           <button className="icon-btn" title="模型设置" onClick={() => setShowSettings(true)}>⚙</button>
           <button className="btn btn-primary" disabled={!hasSlides || busy} onClick={onExport}>导出 PPTX</button>
         </div>
@@ -342,10 +354,11 @@ export default function App() {
       {showSettings ? (
         <SettingsPanel
           onClose={() => setShowSettings(false)}
-          onSaved={(v) => setConfig(v)}
+          onProvidersChange={(d) => setProviders(d)}
           flash={flash}
         />
       ) : null}
+      <AppDialogHost dialog={dialog} />
       {toast ? <div className={`toast ${toast.type}`}>{toast.text}</div> : null}
     </div>
   );

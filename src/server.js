@@ -14,8 +14,7 @@ const materials = require('./materials');
 const { buildSpec } = require('./spec');
 const { createRelay } = require('./relay');
 const { RUNTIME_FILE } = require('./paths');
-const config = require('./config');
-const llm = require('./llm');
+const llmprovider = require('./llmprovider');
 const genOutline = require('./generate-outline');
 
 const app = express();
@@ -37,7 +36,8 @@ app.use(express.static(path.join(__dirname, '..', 'public')));
 function statusOf(err) {
   if (err.code === 'SESSION_NOT_FOUND' || err.code === 'ASSET_NOT_FOUND') return 404;
   if (err.code === 'BAD_SESSION_ID' || err.code === 'BAD_ASSET_NAME') return 400;
-  if (err.code === 'BAD_INPUT' || err.code === 'NO_API_KEY' || err.code === 'NO_MODEL_CONFIG') return 400;
+  if (err.code === 'NO_API_KEY') return 401;
+  if (err.code === 'BAD_INPUT' || err.code === 'NO_MODEL_CONFIG' || err.code === 'CAPABILITY_NOT_SUPPORTED') return 400;
   if (err.code === 'BUSY') return 409;
   if (err.code === 'LLM_HTTP' || err.code === 'LLM_EMPTY' || err.code === 'LLM_TIMEOUT') return 502; // 上游模型错误
   return 500;
@@ -291,31 +291,87 @@ app.post('/api/agent/action', wrap(async (req, res) => {
   res.json({ ok: true, seq: item.seq, version: item.version });
 }));
 
-// ---------- 内置生成（阶段1）：单一 OpenAI 兼容 provider，供纯人类用户无 Agent 也能出稿 ----------
-// 与 /api/agent/* 关系路径并存：有 key 即「server-gen 模式」，无 key 则前端行为与今日一致。
+// ---------- 模型供应商（多供应商 × 多模型 × 能力绑定） ----------
+// 有绑定「文本」默认模型（或 OPENAI_* 环境变量）即「server-gen 模式」，供纯人类用户无 Agent 也能出稿。
 // 生成结果一律经既有 normalizeOutline + relay.setDoc 落库，preview==export 与 SSE 完全不变。
 
-// 配置读（前端安全视图，绝不含明文 key）
-app.get('/api/config', (req, res) => {
-  res.json(config.publicView());
+// 一次性拉取设置面板所需全部数据：能力枚举 + 供应商模板（投影）+ 已配实例 + 能力绑定
+app.get('/api/providers', (req, res) => {
+  res.json({
+    capabilities: llmprovider.CAPABILITIES,
+    capabilityLabels: llmprovider.CAPABILITY_LABELS,
+    templates: llmprovider.PROVIDER_TEMPLATES.map((t) => ({
+      id: t.id, name: t.name, baseURL: t.baseURL, keyUrl: t.keyUrl || null, noKey: Boolean(t.noKey),
+      short: t.short || t.name[0], color: t.color || '#64748b', tagline: t.tagline || '', tag: t.tag || '',
+    })),
+    instances: llmprovider.listInstances(),
+    active: llmprovider.listActive(),
+  });
 });
 
-// 配置写（浅合并 { baseURL, apiKey, model }；空 apiKey 视为保留原值）
-app.post('/api/config', wrap(async (req, res) => {
-  config.saveConfig(req.body || {});
-  res.json(config.publicView());
+// 新建实例：{ preset?, name?, baseURL?, apiKey? } → { id }
+app.post('/api/instances', wrap(async (req, res) => {
+  const inst = llmprovider.createInstance(req.body || {});
+  res.json({ id: inst.id });
 }));
 
-// 连接测试：body 的 { baseURL, apiKey } 优先（存库前先测），否则回退已存配置。/v1 缺失自愈并给出 suggestedBaseURL。
-app.post('/api/config/test', wrap(async (req, res) => {
-  const { baseURL, apiKey } = req.body || {};
-  res.json(await llm.test({ baseURL, apiKey }));
+// 改实例（patch，空串=不改）：{ name?, apiKey?, enabled?, baseURL? }
+app.put('/api/instances/:id', wrap(async (req, res) => {
+  llmprovider.updateInstance(req.params.id, req.body || {});
+  res.json({ ok: true });
+}));
+
+// 删实例（连带清理指向它的 active 绑定）
+app.delete('/api/instances/:id', wrap(async (req, res) => {
+  llmprovider.deleteInstance(req.params.id);
+  res.json({ ok: true });
+}));
+
+// 连接测试（存库前先测）：body 可带 { baseURL?, apiKey? } 覆盖 → { ok, resolvedBaseURL, suggestedBaseURL }
+app.post('/api/instances/:id/test', wrap(async (req, res) => {
+  res.json(await llmprovider.testInstance(req.params.id, req.body || {}));
+}));
+
+// 单模型实测（真实收发一条消息，打 lastTest 标记）：{ model } → { ok, model, ... } | { ok:false, model, error }
+app.post('/api/instances/:id/test-model', wrap(async (req, res) => {
+  res.json(await llmprovider.testModel(req.params.id, req.body?.model));
+}));
+
+// 批量实测该实例下 enabled 的 chat/vision 模型 → { results: [...] }
+app.post('/api/instances/:id/test-models', wrap(async (req, res) => {
+  res.json(await llmprovider.testModels(req.params.id));
+}));
+
+// 从远端 /models 拉列表（只读不写库）→ { ids, existing, suggestedBaseURL }
+app.post('/api/instances/:id/remote-models', wrap(async (req, res) => {
+  res.json(await llmprovider.peekRemoteModels(req.params.id));
+}));
+
+// 加/改模型（upsert）：{ id:<modelId>, caps?, enabled? } → { models }
+app.post('/api/instances/:id/models', wrap(async (req, res) => {
+  const { id, caps, enabled } = req.body || {};
+  res.json({ models: llmprovider.addModel(req.params.id, id, caps, enabled) });
+}));
+
+// 删模型（连带清理指向它的 active 绑定）：{ model } 或 ?model= → { models }
+app.delete('/api/instances/:id/models', wrap(async (req, res) => {
+  const model = req.body?.model || req.query.model;
+  res.json({ models: llmprovider.removeModel(req.params.id, model) });
+}));
+
+// 设能力绑定：{ capability, instance, model } → { ok, active }
+app.post('/api/active', wrap(async (req, res) => {
+  const { capability, instance, model } = req.body || {};
+  llmprovider.setActiveBinding(capability, instance, model);
+  res.json({ ok: true, active: llmprovider.listActive() });
 }));
 
 // 生成 / 修订内容大纲：带 comments → 批注改稿（复用 normalizeComments 剔除失效引用）；否则按 topic 首次生成。
 // 归一后写权威 doc → SSE 'doc' 推浏览器，走与 Agent 推大纲同一条 relay 路径。改稿不依赖任何人轮询 next。
 app.post('/api/generate/outline', wrap(async (req, res) => {
-  if (!config.hasProvider()) return res.status(400).json({ error: '尚未配置模型：请打开右上角设置填写 API Key' });
+  if (!llmprovider.listActive().chat) {
+    return res.status(400).json({ error: '尚未配置模型：请打开右上角「模型设置」添加供应商并绑定「文本」默认模型' });
+  }
   const { topic, pages, materials: pastedMaterials, comments } = req.body || {};
   let markdown;
   if (Array.isArray(comments) && comments.length) {

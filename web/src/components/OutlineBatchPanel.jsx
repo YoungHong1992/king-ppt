@@ -44,7 +44,7 @@ export default function OutlineBatchPanel({ comments, busy, hasDoc, activeCommen
           className="btn"
           disabled={busy || !hasDoc}
           title="确认内容无误，冻结为内容基线并进入出片阶段"
-          onClick={() => { if (window.confirm('确认定稿？将以当前大纲作为内容基线进入出片阶段。')) onFinalize(); }}
+          onClick={onFinalize}
         >
           定稿
         </button>
