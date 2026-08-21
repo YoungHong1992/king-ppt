@@ -149,11 +149,12 @@ function buildSpec(theme, layoutFiles = []) {
     name: theme.name,
     canvas: theme.canvas || CANVAS,
     tokens: theme.tokens || {},
+    imagePolicy: theme.imagePolicy || null,
     tone: theme.tone || '',
     roles: ROLE_GUIDE,
     layouts,                         // 4 个角色原型页（含 svg），生成时可直接改文字/复用骨架
     tokensText: tokensText(theme),   // 人读的设计系统说明
-    authoringText: AUTHORING_RULES,  // SVG 创作硬规则
+    authoringText: [AUTHORING_RULES, theme.authoringText || ''].filter(Boolean).join('\n\n'),  // SVG 创作硬规则
     deckShape: '{ title, themeId, slides: [ { svg, role?, title? } ] }',
     guidance: '每页写一整张 1280×720 的 SVG。先挑最贴近的角色原型当骨架，替换文字/数据，再按内容增删元素。'
       + '重点页（核心卖点、重磅数字、创意大图）值得多花心思做独特版式；叙述页保持规整一致即可。'

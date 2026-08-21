@@ -2,7 +2,7 @@ const path = require('path');
 const fs = require('fs');
 const express = require('express');
 const { buildPptx } = require('./pptx');
-const { loadDescriptor, listDescriptors, loadTheme, loadThemeLayouts } = require('./descriptor');
+const { loadDescriptor, listDescriptors, loadTheme, loadThemeLayouts, loadProfile } = require('./descriptor');
 const { resolve } = require('./layout-resolver'); // 仅供旧模板画廊 sample/preview 路由；P3 主题系统落地后连同这些路由一并移除
 const assets = require('./assets');
 const { extractFromPptx, saveTemplate } = require('./extract');
@@ -16,6 +16,8 @@ const { RUNTIME_FILE } = require('./paths');
 const llmprovider = require('./llmprovider');
 const genOutline = require('./generate-outline');
 const genDeck = require('./generate-deck');
+const { renderTemplateSlide } = require('./template-renderer');
+const { scoreDeck } = require('./style-score');
 
 const app = express();
 const relay = createRelay(); // 演示态存储（deck/doc）+ SSE 广播总线
@@ -62,7 +64,8 @@ app.get('/api/templates', (req, res) => {
 // 所选主题的创作规格：设计令牌 + 4 个角色原型页 + SVG 创作规则，供生成引擎照着画整页 SVG
 app.get('/api/templates/:id/spec', wrap(async (req, res) => {
   const theme = loadTheme(req.params.id);
-  res.json(buildSpec(theme, loadThemeLayouts(req.params.id)));
+  const profile = loadProfile(req.params.id);
+  res.json({ ...buildSpec(theme, loadThemeLayouts(req.params.id)), profile: profile ? { confidence: profile.extraction?.confidence, roles: Object.keys(profile.roles || {}), sourceSlideCount: profile.sourceSlideCount } : null });
 }));
 
 // 画廊卡片预览：3 张样例页的场景图
@@ -189,6 +192,16 @@ app.get('/api/doc', (req, res) => {
   res.json(relay.getDoc());
 });
 
+// The score is derived from actual SVG geometry, typefaces, colors and image
+// slots. It is exposed both for UI feedback and automated regression runs.
+app.get('/api/deck/style-score', wrap(async (req, res) => {
+  const state = relay.getState();
+  if (!state.templateId) return res.json({ available: false, reason: '当前还没有生成中的演示文稿' });
+  const profile = loadProfile(state.templateId);
+  if (!profile) return res.json({ available: false, reason: '当前模板尚未提取参考画像' });
+  res.json({ available: true, ...scoreDeck({ profile, slides: state.slides }) });
+}));
+
 // ---------- 浏览器就地编辑 ----------
 // 把改后的整页 SVG 归一清洗后落权威 deck 并广播（预览==导出消费同一份）。
 app.post('/api/deck/slide', wrap(async (req, res) => {
@@ -314,6 +327,7 @@ app.post('/api/generate/deck', wrap(async (req, res) => {
   if (!md || !md.trim()) return res.status(400).json({ error: '还没有内容大纲，请先在阶段1 生成并定稿' });
   const theme = loadTheme(themeId || templateId);
   const spec = buildSpec(theme, loadThemeLayouts(theme.id));
+  const profile = loadProfile(theme.id);
   const { title, sections } = genDeck.splitOutline(md);
   const total = sections.length;
 
@@ -324,14 +338,18 @@ app.post('/api/generate/deck', wrap(async (req, res) => {
     const recovered = [];
     for (let i = 0; i < total; i++) {
       const s = sections[i];
-      const svg = await genDeck.generateSlideSvg({
-        docTitle: title, section: s, role: s.role, index: i, total, spec,
-      });
+      const profilePolicy = spec.imagePolicy || { enabled: true, roles: ['cover', 'content'], maxPerDeck: 3, size: '1024x1024' };
+      const imageData = profile ? await genDeck.generateSlideImage({ role: s.role, index: i, docTitle: title, section: s, policy: profilePolicy }) : null;
+      let svg = profile ? renderTemplateSlide({ profile, templateDir: theme._dir, section: s, role: s.role, index: i, total, imageData }) : null;
+      if (!svg) {
+        svg = await genDeck.generateSlideSvg({ docTitle: title, section: s, role: s.role, index: i, total, spec });
+        svg = await genDeck.addGeneratedImage(svg, { role: s.role, index: i, docTitle: title, section: s, policy: spec.imagePolicy });
+      }
       const slide = normalize.normalizeSlide({ svg, role: s.role, title: s.heading }, i, total);
       if (slide._recovered) recovered.push(i);
       relay.setSlide(i, slide, theme.canvas);
     }
-    res.json({ themeId: theme.id, pages: total, recovered });
+    res.json({ themeId: theme.id, pages: total, recovered, renderer: profile ? 'template-profile' : 'free-svg', styleScore: profile ? scoreDeck({ profile, slides: relay.getState().slides }) : null });
   } finally {
     genDeck.release();
   }
@@ -350,6 +368,7 @@ app.post('/api/generate/slide', wrap(async (req, res) => {
   const state = relay.getState();
   const theme = loadTheme(themeId || templateId || state.templateId);
   const spec = buildSpec(theme, loadThemeLayouts(theme.id));
+  const profile = loadProfile(theme.id);
   const { title, sections } = genDeck.splitOutline(md);
   const total = Math.max(sections.length, idx + 1);
   const section = sections[idx];
@@ -357,12 +376,16 @@ app.post('/api/generate/slide', wrap(async (req, res) => {
 
   genDeck.acquire();
   try {
-    const svg = await genDeck.generateSlideSvg({
-      docTitle: title, section, role: section.role, index: idx, total, spec, feedback,
-    });
+    const profilePolicy = spec.imagePolicy || { enabled: true, roles: ['cover', 'content'], maxPerDeck: 3, size: '1024x1024' };
+    const imageData = profile ? await genDeck.generateSlideImage({ role: section.role, index: idx, docTitle: title, section, policy: profilePolicy }) : null;
+    let svg = profile ? renderTemplateSlide({ profile, templateDir: theme._dir, section, role: section.role, index: idx, total, imageData }) : null;
+    if (!svg) {
+      svg = await genDeck.generateSlideSvg({ docTitle: title, section, role: section.role, index: idx, total, spec, feedback });
+      svg = await genDeck.addGeneratedImage(svg, { role: section.role, index: idx, docTitle: title, section, policy: spec.imagePolicy });
+    }
     const slide = normalize.normalizeSlide({ svg, role: section.role, title: section.heading }, idx, total);
     relay.setSlide(idx, slide, theme.canvas);
-    res.json({ index: idx, recovered: slide._recovered ? [idx] : [] });
+    res.json({ index: idx, recovered: slide._recovered ? [idx] : [], renderer: profile ? 'template-profile' : 'free-svg', styleScore: profile ? scoreDeck({ profile, slides: relay.getState().slides }) : null });
   } finally {
     genDeck.release();
   }

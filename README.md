@@ -33,7 +33,7 @@ node bin/cli.js serve        # 启动服务 + 开浏览器（默认 http://local
 | 方法 & 路径 | 用途 |
 | --- | --- |
 | `GET /api/templates` | 列出可选主题 `{id, name, source, palette}` |
-| `GET /api/templates/:id/spec` | 某主题的创作规格：设计令牌 + 4 张角色原型 SVG + 创作规则 |
+| `GET /api/templates/:id/spec` | 某主题的创作规格：设计令牌 + 4 张角色原型 SVG + 创作规则 + 参考画像摘要 |
 | `GET /api/templates/:id/preview` | 主题整册预览（上传模板还原原件页 / 预设主题样例页） |
 | `POST /api/templates/extract` · `POST /api/templates` | 上传 .pptx 提取为可复用主题 |
 | `GET /api/providers` · `POST /api/instances*` · `POST /api/active` | 多供应商 × 多模型 × 能力绑定的配置读写 |
@@ -42,6 +42,7 @@ node bin/cli.js serve        # 启动服务 + 开浏览器（默认 http://local
 | `POST /api/generate/slide` | 单页重生成 `{index, feedback?}` |
 | `POST /api/deck/slide` | 就地编辑落库 `{index, svg}` |
 | `GET /api/deck` · `GET /api/doc` | 演示态 / 大纲快照（刷新/重连恢复） |
+| `GET /api/deck/style-score` | 当前整册风格评分（配色、字体、角色几何、图片槽位、正文一致性） |
 | `GET /api/stream` | SSE：推 `deck` / `slide` / `doc` 事件 |
 | `POST /api/export` | 导出当前演示态为 .pptx |
 
@@ -58,8 +59,9 @@ king-ppt export <out.pptx>              导出当前演示态为 .pptx
 ## 模板系统
 
 - 主题 = 一份 `theme.json` 令牌包：角色化色板（`primary`/`accent`/`text`/`bg`…）、字号档位（`display`/`pageTitle`/`body`…）、几何（圆角/细线/边距）、基调 tone。生成引擎只用这些令牌值作画，保证整册风格一致。
-- **预设主题**：`classic-blue`（经典蓝）、`warm-retro`（暖复古）。位于 `templates/<id>/`。
-- **上传主题**：网页里选一份 .pptx，自动提取主题色/字体/字号档位生成主题草稿；存 `KING_PPT_HOME/templates/<id>/`（含 `source.pptx` 原件供重新提取）。
+- **预设主题**：`warm-retro`（默认，纸感拼贴参考样式）、`classic-blue`（经典蓝）。位于 `templates/<id>/`。
+- **上传主题**：网页里选一份 .pptx，自动提取主题色/字体/字号档位，并为封面、章节、正文、结尾建立去文字烘焙底图与实测槽位画像；存 `KING_PPT_HOME/templates/<id>/`（含 `source.pptx` 原件和 `template-profile.json`）。有画像的模板使用确定性槽位填充，避免正文页逐页漂移；无 Chrome 时自动退回令牌版式。
+- **可重复评估**：`node scripts/benchmark-template-style.js <reference.pptx> <output-dir>` 会用“悯农”跑自由 SVG 基线与画像渲染迭代，输出分数、差值和 PPTX。
 
 ## 目录结构
 

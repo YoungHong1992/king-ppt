@@ -21,6 +21,7 @@ export const api = {
   themeSpec: (id) => req(`/api/templates/${encodeURIComponent(id)}/spec`),
   // 演示态快照（刷新/重连恢复）：deck=整册幻灯片，doc=内容大纲
   deck: () => req('/api/deck'),
+  styleScore: () => req('/api/deck/style-score'),
   doc: () => req('/api/doc'),
   // 就地编辑：把改后的整页 SVG 落回服务端（sanitize 后广播，预览==导出消费同一份）
   editSlide: (index, svg) => req('/api/deck/slide', { method: 'POST', body: { index, svg } }),

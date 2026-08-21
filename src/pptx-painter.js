@@ -18,6 +18,7 @@ function paintText(slide, o) {
   slide.addText(o.text, {
     x: o.x, y: o.y, w: o.w, h: o.h,
     fontSize: o.fontSize, bold: o.bold, color: o.color, fontFace: o.fontFace,
+    italic: o.italic,
     align: o.align, valign: o.valign, charSpacing: o.charSpacing,
   });
 }

@@ -13,6 +13,11 @@ function chatVision(messages, opts = {}) {
   return provider.chat('vision', messages, opts);
 }
 
+// 图像生成：统一暴露给出片管线，返回供应商的 url 或 base64 结果。
+function generateImage(prompt, opts = {}) {
+  return provider.generateImage(prompt, opts);
+}
+
 // 从模型输出容错提取 JSON 对象/数组（M2 结构化输出备用）
 function extractJson(text) {
   const cleaned = String(text || '').replace(/```(?:json)?/gi, '').trim();
@@ -35,4 +40,4 @@ function extractSvg(text) {
   return s.slice(start, end + 6);
 }
 
-module.exports = { chat, chatVision, extractJson, extractSvg };
+module.exports = { chat, chatVision, generateImage, extractJson, extractSvg };

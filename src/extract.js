@@ -8,6 +8,7 @@ const JSZip = require('jszip');
 const { XMLParser } = require('fast-xml-parser');
 const { loadDescriptor, USER_DIR } = require('./descriptor');
 const { resolve } = require('./layout-resolver');
+const { profileFromPptx } = require('./template-profile');
 
 const EMU = 914400;
 const LIMITS = {
@@ -450,10 +451,21 @@ async function extractFromPptx(buffer, filename = 'uploaded.pptx') {
 
   fs.writeFileSync(path.join(stagingDir, 'template.json'), JSON.stringify(descriptor, null, 2));
 
+  // A descriptor captures broad tokens; the profile captures actual source
+  // slides and baked chrome. Profile extraction is deliberately best-effort so
+  // a browser-less machine can still save a conservative token template.
+  let profile = null;
+  let profileWarning = null;
+  try {
+    profile = await profileFromPptx(buffer, { stagingDir });
+  } catch (err) {
+    profileWarning = err.message;
+  }
+
   // 确认面板用的 3 张样例场景
   const sampleScenes = buildSampleScenes(descriptor, stagingDir);
 
-  return { stagingId, descriptor, sampleScenes };
+  return { stagingId, descriptor, sampleScenes, profile: profile ? { confidence: profile.extraction.confidence, roles: Object.keys(profile.roles) } : null, profileWarning };
 }
 
 function buildSampleScenes(descriptor, dir) {

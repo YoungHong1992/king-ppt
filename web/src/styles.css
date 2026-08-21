@@ -37,6 +37,8 @@ body {
 .brand-name { font-size: 15px; }
 .deck-title { color: var(--muted); font-size: 14px; flex: 1; }
 .topbar-right { display: flex; align-items: center; gap: 12px; }
+.score-chip { display: inline-flex; align-items: center; padding: 5px 9px; border: 1px solid var(--border); border-radius: 999px; color: var(--muted); background: #fff; font-size: 12px; font-variant-numeric: tabular-nums; }
+.score-chip.pass { color: #166534; border-color: #86efac; background: #f0fdf4; }
 .conn-dot { width: 8px; height: 8px; border-radius: 50%; background: #cbd5e1; }
 .conn-dot.on { background: var(--ok); box-shadow: 0 0 0 3px rgba(16,185,129,.15); }
 

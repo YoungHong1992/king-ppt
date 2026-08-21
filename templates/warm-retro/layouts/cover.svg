@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720">
+  <rect width="1280" height="720" fill="#F7F1E5"/>
+  <rect x="64" y="70" width="10" height="570" rx="5" fill="#E2703A"/>
+  <circle cx="1070" cy="124" r="90" fill="#5B8A72" fill-opacity="0.22"/>
+  <path d="M920 580 C1010 485 1110 520 1200 420" fill="none" stroke="#E2703A" stroke-width="10"/>
+  <rect x="100" y="188" width="110" height="7" rx="3" fill="#E2703A"/>
+  <text x="100" y="155" font-family="Microsoft YaHei" font-size="18" font-weight="bold" fill="#5B8A72">AI WORKSHOP · 2026</text>
+  <text x="100" y="330" font-family="KaiTi" font-size="72" font-weight="bold" fill="#2B4C7E">演示文稿主标题</text>
+  <text x="103" y="397" font-family="Microsoft YaHei" font-size="26" fill="#33302B">用一句清晰的话说明这次分享的核心问题</text>
+  <text x="100" y="640" font-family="Microsoft YaHei" font-size="16" fill="#6B6155">分享人 / 团队 · 2026</text>
+</svg>

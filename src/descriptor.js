@@ -2,11 +2,13 @@
 const fs = require('fs');
 const path = require('path');
 const { TEMPLATES_DIR } = require('./paths');
+const { loadTemplateProfile } = require('./template-profile');
 
 const PRESET_DIR = path.join(__dirname, '..', 'templates');
 const USER_DIR = TEMPLATES_DIR;
 const SUPPORTED_SCHEMA_MAJOR = 1; // schemaVersion "1.x" 均兼容
-const DEFAULT_TEMPLATE = 'classic-blue';
+// 参考样本同源的纸感主题作为默认选择，其他模板仍可在画廊中切换。
+const DEFAULT_TEMPLATE = 'warm-retro';
 
 const cache = new Map();
 
@@ -156,4 +158,9 @@ function loadThemeLayouts(id = DEFAULT_TEMPLATE) {
   return out;
 }
 
-module.exports = { loadDescriptor, listDescriptors, clearCache, loadTheme, loadThemeLayouts, DEFAULT_TEMPLATE, PRESET_DIR, USER_DIR };
+function loadProfile(id = DEFAULT_TEMPLATE) {
+  const dir = templateDir(id);
+  return dir ? loadTemplateProfile(dir) : null;
+}
+
+module.exports = { loadDescriptor, listDescriptors, clearCache, loadTheme, loadThemeLayouts, loadProfile, DEFAULT_TEMPLATE, PRESET_DIR, USER_DIR };

@@ -22,11 +22,12 @@ const STEPS = [
 export default function App() {
   const [step, setStep] = useState('outline'); // 'outline' | 'theme' | 'slides'
   const [deck, setDeck] = useState({ title: '', themeId: null, slides: [], version: 0 });
+  const [styleScore, setStyleScore] = useState(null);
   const [doc, setDocState] = useState({ markdown: '', title: '', version: 0 });
   const [outlineComments, setOutlineComments] = useState([]);
   const [activeCommentId, setActiveCommentId] = useState(null);
   const [themes, setThemes] = useState([]);
-  const [selectedThemeId, setSelectedThemeId] = useState(null); // 选模板步已选中的主题
+  const [selectedThemeId, setSelectedThemeId] = useState('warm-retro'); // 默认使用参考样式主题
   const [previewTheme, setPreviewTheme] = useState(null);       // 正在预览的主题对象（null=不显示弹层）
   const [activeIndex, setActiveIndex] = useState(0);
   const [busy, setBusy] = useState(false);
@@ -111,6 +112,17 @@ export default function App() {
   const hasDoc = !!doc.markdown;
   const hasModel = !!providers?.active?.chat; // 已绑定文本默认模型才能生成
   const activeThemeId = selectedThemeId || deck.themeId;
+
+  // Re-score after each streamed page. The score is computed from the same SVG
+  // payload used by preview/export, so the badge reflects the current deck.
+  useEffect(() => {
+    if (!hasSlides || !deck.themeId) { setStyleScore(null); return undefined; }
+    let alive = true;
+    const timer = setTimeout(() => {
+      api.styleScore().then((r) => { if (alive) setStyleScore(r.available ? r : null); }).catch(() => {});
+    }, 180);
+    return () => { alive = false; clearTimeout(timer); };
+  }, [deck.version, deck.themeId, hasSlides]);
 
   // ---------- 阶段2：出片 ----------
   // 就地编辑：把改后的整页 SVG 交回服务端（sanitize 后落权威 deck 并广播）
@@ -266,6 +278,7 @@ export default function App() {
         <div className="deck-title">{headerTitle}</div>
         <div className="topbar-right">
           <span className={`conn-dot${connected ? ' on' : ''}`} title={connected ? '已连接' : '未连接'} />
+          {styleScore ? <span className={`score-chip${styleScore.pass ? ' pass' : ''}`} title="模板风格评分：配色、字体、版式、图片槽位与正文页一致性综合评分">风格 {styleScore.score.toFixed(1)}</span> : null}
           <button className="model-chip" title="模型设置" onClick={() => setShowSettings(true)}>
             <span className={`chip-dot${hasModel ? ' ok' : ''}`} />
             <span className="model-info">{hasModel ? `${providers.active.chat.instanceName} · ${providers.active.chat.model}` : '未配置模型'}</span>

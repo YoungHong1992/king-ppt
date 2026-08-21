@@ -4,6 +4,9 @@
 // 即 svg-sanitize 会保留什么）+ 角色原型骨架，喂给模型，与 /spec 暴露的是同一份创作契约。
 const llm = require('./llm');
 const { deriveTitle } = require('./normalize-outline');
+const llmprovider = require('./llmprovider');
+const assets = require('./assets');
+const fs = require('fs');
 
 // 模块级 in-flight 锁：整册生成与单页重画共用一把，禁止并发（双击 / 生成中再点）。
 let inflight = false;
@@ -12,6 +15,81 @@ function acquire() {
   inflight = true;
 }
 function release() { inflight = false; }
+
+function imageEnabledFor(policy, role, index) {
+  if (!policy || policy.enabled === false) return false;
+  // Cover and divider imagery is part of the template language. Do not use
+  // the page-index cap for those roles; it skipped later chapter art.
+  if (role === 'content' && Number(policy.maxPerDeck) >= 0 && index >= Number(policy.maxPerDeck)) return false;
+  const roles = Array.isArray(policy.roles) && policy.roles.length ? policy.roles : ['cover', 'section'];
+  if (!roles.includes(role)) return false;
+  if (role === 'content' && Number(policy.contentEvery) > 1 && index % Number(policy.contentEvery) !== 0) return false;
+  return Boolean(llmprovider.listActive().image);
+}
+
+async function addGeneratedImage(svg, { role, index, docTitle, section, policy }) {
+  if (!svg || !imageEnabledFor(policy, role, index)) return svg;
+  const hint = policy.prompt || 'editorial paper collage, warm natural light, hand-cut shapes, no words or lettering';
+  const prompt = [
+    `Create a single presentation illustration for the topic: ${docTitle || 'the presentation'}.`,
+    `This slide is about: ${section.heading}.`,
+    `Visual direction: ${hint}.`,
+    role === 'section'
+      ? 'Make this a wide chapter-divider illustration with the focal subject on the upper right and calm negative space in the lower left for the chapter number and title.'
+      : role === 'cover'
+        ? 'Make this a wide cover illustration with the subject grouped on the right and generous calm negative space on the left for the title.'
+        : '',
+    'Use a clean subject with generous negative space, no logos, no UI screenshots, no readable text.',
+  ].join(' ');
+  try {
+    const result = await llm.generateImage(prompt, { size: policy.size || '1024x1024' });
+    let saved;
+    if (result.b64) saved = assets.saveImageBase64(result.b64, 'png');
+    else if (result.url) saved = await assets.saveImageFromUrl(result.url);
+    if (!saved || !fs.existsSync(saved.path)) return svg;
+    const ext = saved.file.split('.').pop().toLowerCase();
+    const mime = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : ext === 'webp' ? 'image/webp' : 'image/png';
+    const data = `data:${mime};base64,${fs.readFileSync(saved.path).toString('base64')}`;
+    const p = policy.placement || {};
+    const x = Number(p.x ?? 900), y = Number(p.y ?? 130), w = Number(p.w ?? 290), h = Number(p.h ?? 450);
+    const frame = String(policy.frame || '#E2703A');
+    const image = `<rect x="${x - 10}" y="${y - 10}" width="${w + 20}" height="${h + 20}" rx="24" fill="${frame}" fill-opacity="0.18"/><image x="${x}" y="${y}" width="${w}" height="${h}" preserveAspectRatio="xMidYMid slice" href="${data}"/>`;
+    // 放在第一个文本节点前，始终保持插画在文字下层。
+    const firstText = svg.search(/<text\b/i);
+    return firstText >= 0 ? `${svg.slice(0, firstText)}${image}${svg.slice(firstText)}` : svg.replace(/<\/svg>\s*$/i, `${image}</svg>`);
+  } catch {
+    // 生图是增强能力；未配置或上游失败时不影响整册 SVG 出片。
+    return svg;
+  }
+}
+
+// Same image policy, but returns an inline data URI for the deterministic
+// template renderer. Keeping image generation separate prevents it from
+// changing layout or inserting an image into the wrong frame.
+async function generateSlideImage({ role, index, docTitle, section, policy }) {
+  if (!imageEnabledFor(policy, role, index)) return null;
+  const hint = policy.prompt || 'editorial paper collage, warm natural light, hand-cut shapes, no words or lettering';
+  const prompt = [
+    `Create a single presentation illustration for the topic: ${docTitle || 'the presentation'}.`,
+    `This slide is about: ${section.heading}.`, `Visual direction: ${hint}.`,
+    role === 'section'
+      ? 'Make this a wide chapter-divider illustration with the focal subject on the upper right and calm negative space in the lower left for the chapter number and title.'
+      : role === 'cover'
+        ? 'Make this a wide cover illustration with the subject grouped on the right and generous calm negative space on the left for the title.'
+        : '',
+    'Use a clean subject with generous negative space, no logos, no UI, no readable text.',
+  ].join(' ');
+  try {
+    const result = await llm.generateImage(prompt, { size: policy.size || '1024x1024' });
+    let saved;
+    if (result.b64) saved = assets.saveImageBase64(result.b64, 'png');
+    else if (result.url) saved = await assets.saveImageFromUrl(result.url);
+    if (!saved || !fs.existsSync(saved.path)) return null;
+    const ext = saved.file.split('.').pop().toLowerCase();
+    const mime = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : ext === 'webp' ? 'image/webp' : 'image/png';
+    return `data:${mime};base64,${fs.readFileSync(saved.path).toString('base64')}`;
+  } catch { return null; }
+}
 
 // 角色语义（喂给模型，决定版式意图）；与 spec.js 的 ROLE_GUIDE 对齐
 const ROLE_BRIEF = {
@@ -41,13 +119,26 @@ function splitOutline(markdown) {
   if (cur) sections.push(cur);
 
   const total = sections.length;
+  const isSectionHeading = (heading, body) => {
+    const h = String(heading || '').trim();
+    const short = String(body || '').replace(/\s+/g, '').length <= 65;
+    return short && /^(第[一二三四五六七八九十百\d]+[章节]|[一二三四五六七八九十]+、|0?\d+[.、\s]|chapter\s+\d+)/i.test(h);
+  };
+  const isClosingHeading = (heading) => /(谢谢|感谢|结语|总结|尾声|结束|行动|倡议|寄语|致敬|takeaway|closing|thank\s*you)/i.test(String(heading || '').trim());
   const pages = sections.map((s, i) => {
     const body = s.bodyLines.join('\n').trim();
     const role = total <= 1 ? 'cover'
       : i === 0 ? 'cover'
-        : i === total - 1 ? 'closing'
-          : 'content';
+        : isClosingHeading(s.heading) ? 'closing'
+          : isSectionHeading(s.heading, body) ? 'section' : 'content';
     return { heading: s.heading, body, raw: `## ${s.heading}\n${body}`.trim(), role };
+  });
+
+  // Chapter numbers are semantic, not page indexes. A cover and content pages
+  // must never turn a later divider into "04" just because it is page four.
+  let chapterNo = 0;
+  pages.forEach((page) => {
+    if (page.role === 'section') page.sectionNo = String(++chapterNo).padStart(2, '0');
   });
 
   // 大纲无任何 ## 时兜底为单张封面页，避免出片阶段空册
@@ -92,4 +183,4 @@ async function generateSlideSvg({ docTitle, section, role, index, total, spec, f
   return llm.extractSvg(text);
 }
 
-module.exports = { splitOutline, generateSlideSvg, acquire, release };
+module.exports = { splitOutline, generateSlideSvg, addGeneratedImage, generateSlideImage, acquire, release };

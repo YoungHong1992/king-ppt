@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720">
+  <rect width="1280" height="720" fill="#F7F1E5"/>
+  <rect x="72" y="126" width="110" height="7" rx="3" fill="#E2703A"/>
+  <path d="M80 175 C160 155 236 185 320 169" fill="none" stroke="#5B8A72" stroke-width="4"/>
+  <circle cx="1140" cy="88" r="24" fill="#E2703A" fill-opacity="0.8"/>
+  <text x="78" y="98" font-family="KaiTi" font-size="38" font-weight="bold" fill="#2B4C7E">页面标题要表达结论</text>
+  <circle cx="96" cy="260" r="7" fill="#E2703A"/>
+  <text x="124" y="269" font-family="Microsoft YaHei" font-size="24" fill="#33302B">第一条要点，表达可被记住的观点</text>
+  <circle cx="96" cy="350" r="7" fill="#E2703A"/>
+  <text x="124" y="359" font-family="Microsoft YaHei" font-size="24" fill="#33302B">第二条要点，补充事实、案例或方法</text>
+  <circle cx="96" cy="440" r="7" fill="#E2703A"/>
+  <text x="124" y="449" font-family="Microsoft YaHei" font-size="24" fill="#33302B">第三条要点，收束到下一步行动</text>
+  <text x="78" y="670" font-family="Microsoft YaHei" font-size="14" fill="#99907F">复古蓝米 · 01</text>
+</svg>

@@ -170,8 +170,18 @@ async function fetchRemoteModelIds(inst) {
       err.httpStatus = resp.status;
       throw err;
     }
-    const data = await resp.json();
-    return (data.data || []).map((m) => m.id).filter(Boolean);
+    let data;
+    try { data = await resp.json(); } catch {
+      const err = fail('服务地址未返回 JSON，请检查 Base URL 是否包含 /v1', 'LLM_HTTP');
+      err.httpStatus = 404;
+      throw err;
+    }
+    if (!Array.isArray(data.data)) {
+      const err = fail('服务地址未返回 OpenAI 兼容模型列表', 'LLM_HTTP');
+      err.httpStatus = 404;
+      throw err;
+    }
+    return data.data.map((m) => m.id).filter(Boolean);
   };
   return probeCandidates(baseURL, fetchAt); // { value: ids, resolvedBaseURL, suggestedBaseURL }
 }
@@ -251,7 +261,15 @@ async function postJSON(url, { key, body, headers = {} }) {
     err.httpStatus = resp.status;
     throw err;
   }
-  return resp.json();
+  try {
+    return await resp.json();
+  } catch {
+    // A web homepage can return HTTP 200 HTML for an API-looking path. Mark it
+    // as a not-found candidate so root URLs can still fall through to /v1.
+    const err = fail('服务地址未返回 JSON，请检查 Base URL 是否包含 /v1', 'LLM_HTTP');
+    err.httpStatus = 404;
+    throw err;
+  }
 }
 
 async function httpGet(url, headers = {}) {
@@ -337,7 +355,20 @@ const openaiAdapter = {
       err.httpStatus = resp.status;
       throw err;
     }
-    return true;
+    try {
+      const data = await resp.json();
+      if (!data || !Array.isArray(data.data)) {
+        const err = fail('服务地址未返回 OpenAI 兼容模型列表', 'LLM_HTTP');
+        err.httpStatus = 404;
+        throw err;
+      }
+      return true;
+    } catch (err) {
+      if (err.code === 'LLM_HTTP') throw err;
+      const bad = fail('服务地址未返回 JSON，请检查 Base URL 是否包含 /v1', 'LLM_HTTP');
+      bad.httpStatus = 404;
+      throw bad;
+    }
   },
 };
 

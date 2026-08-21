@@ -5,7 +5,7 @@ import { api } from '../../api.js';
 // 每组一个下拉，选中即 setActive；chat 组绑定前对未验证模型做一次实测（image 生图调用即扣费，跳过实测）。
 const GROUPS = [
   { cap: 'chat', title: '文本与多模态', badge: '推荐', desc: '生成大纲、修改指令；具备识图能力的模型可同时理解图片', pick: (m) => m.caps.includes('chat') },
-  { cap: 'image', title: '图像生成', badge: '', desc: '为幻灯片生成配图（当前为预留能力）', pick: (m) => m.caps.includes('image') },
+  { cap: 'image', title: '图像生成', badge: '', desc: '为封面与关键页面生成匹配模板的插画', pick: (m) => m.caps.includes('image') },
 ];
 
 export default function DefaultsView({ data, reload, flash, onGoServices }) {

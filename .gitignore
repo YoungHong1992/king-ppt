@@ -8,6 +8,11 @@ node_modules/
 .king-ppt-*/
 *.serve.log
 
+# Local visual QA and benchmark artifacts
+.tmp-style-eval/
+.vision/
+exports/
+
 # 内置生成的 provider 配置（含明文 API Key）。兜底：即便 KING_PPT_HOME 指向非 .king-ppt 前缀目录也不入库
 **/config.json
 
