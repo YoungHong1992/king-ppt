@@ -338,9 +338,9 @@ app.post('/api/generate/deck', wrap(async (req, res) => {
     const recovered = [];
     for (let i = 0; i < total; i++) {
       const s = sections[i];
-      const profilePolicy = spec.imagePolicy || { enabled: true, roles: ['cover', 'content'], maxPerDeck: 3, size: '1024x1024' };
+      const profilePolicy = spec.imagePolicy || { enabled: true, roles: ['cover', 'section'], size: '1024x1024', prompt: profile?.imageStyle };
       const imageData = profile ? await genDeck.generateSlideImage({ role: s.role, index: i, docTitle: title, section: s, policy: profilePolicy }) : null;
-      let svg = profile ? renderTemplateSlide({ profile, templateDir: theme._dir, section: s, role: s.role, index: i, total, imageData }) : null;
+      let svg = profile ? renderTemplateSlide({ profile, templateDir: theme._dir, section: s, role: s.role, index: i, total, imageData, docTitle: title }) : null;
       if (!svg) {
         svg = await genDeck.generateSlideSvg({ docTitle: title, section: s, role: s.role, index: i, total, spec });
         svg = await genDeck.addGeneratedImage(svg, { role: s.role, index: i, docTitle: title, section: s, policy: spec.imagePolicy });
@@ -376,9 +376,9 @@ app.post('/api/generate/slide', wrap(async (req, res) => {
 
   genDeck.acquire();
   try {
-    const profilePolicy = spec.imagePolicy || { enabled: true, roles: ['cover', 'content'], maxPerDeck: 3, size: '1024x1024' };
+    const profilePolicy = spec.imagePolicy || { enabled: true, roles: ['cover', 'section'], size: '1024x1024', prompt: profile?.imageStyle };
     const imageData = profile ? await genDeck.generateSlideImage({ role: section.role, index: idx, docTitle: title, section, policy: profilePolicy }) : null;
-    let svg = profile ? renderTemplateSlide({ profile, templateDir: theme._dir, section, role: section.role, index: idx, total, imageData }) : null;
+    let svg = profile ? renderTemplateSlide({ profile, templateDir: theme._dir, section, role: section.role, index: idx, total, imageData, docTitle: title }) : null;
     if (!svg) {
       svg = await genDeck.generateSlideSvg({ docTitle: title, section, role: section.role, index: idx, total, spec, feedback });
       svg = await genDeck.addGeneratedImage(svg, { role: section.role, index: idx, docTitle: title, section, policy: spec.imagePolicy });

@@ -18,7 +18,7 @@ function browserPath() {
   return candidates.find((p) => fs.existsSync(p)) || null;
 }
 
-async function renderToPng(html, { width = 1280, height = 720, scale = 1 } = {}) {
+async function renderToPng(html, { width = 1280, height = 720, scale = 1, transparent = false } = {}) {
   const browser = browserPath();
   if (!browser) throw new Error('未找到 Chrome/Edge，无法烘焙模板背景');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'king-ppt-shot-'));
@@ -30,6 +30,9 @@ async function renderToPng(html, { width = 1280, height = 720, scale = 1 } = {})
     '--headless=new', '--disable-gpu', '--hide-scrollbars', '--no-sandbox',
     `--window-size=${Math.ceil(width)},${Math.ceil(height)}`,
     `--force-device-scale-factor=${Math.max(1, Number(scale) || 1)}`,
+    // Transparent default background lets a CSS-gradient div screenshot keep its
+    // alpha channel — used to bake smooth gradient overlay masks.
+    ...(transparent ? ['--default-background-color=00000000'] : []),
     `--screenshot=${pngFile}`, `file:///${htmlFile.replace(/\\/g, '/')}`,
   ];
   const result = spawnSync(browser, args, { windowsHide: true, encoding: 'utf8', timeout: 60000 });

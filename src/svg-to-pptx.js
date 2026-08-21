@@ -112,10 +112,19 @@ function imageObject(el, k) {
   const a = el.attrs;
   const href = a['@_href'] || a['@_xlink:href'];
   if (!href || !/^data:/.test(String(href))) return null;
+  const x = (el.tx + num(a['@_x'])) * k;
+  const y = (el.ty + num(a['@_y'])) * k;
+  const w = num(a['@_width']) * k;
+  const h = num(a['@_height']) * k;
+  // preserveAspectRatio="… slice" == CSS object-fit:cover: scale to fill the
+  // frame and crop, no distortion. pptxgenjs stretches by default, so map slice
+  // to sizing:{type:'cover'} — otherwise a square illustration gets squished
+  // into the 16:9 frame (preview honored slice; export must too).
+  const par = String(a['@_preserveAspectRatio'] || '');
+  const cover = /\bslice\b/.test(par);
   return {
-    kind: 'image', data: String(href),
-    x: (el.tx + num(a['@_x'])) * k, y: (el.ty + num(a['@_y'])) * k,
-    w: num(a['@_width']) * k, h: num(a['@_height']) * k,
+    kind: 'image', data: String(href), x, y, w, h,
+    ...(cover ? { sizing: { type: 'cover', w, h } } : {}),
   };
 }
 function textObject(el, k) {
@@ -147,6 +156,7 @@ function textObject(el, k) {
     color: c || '333333',
     align: anchor === 'middle' ? 'center' : anchor === 'end' ? 'right' : 'left',
     valign: 'middle',
+    wrap: false, // each <text> is one pre-wrapped line; never let PowerPoint re-wrap (preview == export)
     ...(op < 1 ? { transparency: Math.round((1 - op) * 100) } : {}),
   };
 }
@@ -160,6 +170,7 @@ function svgToScene(svgString, canvas) {
     attributeNamePrefix: '@_',
     preserveOrder: true,
     trimValues: true,
+    parseTagValue: false, // keep text nodes as strings so "01"/"02" don't become 1/2
   });
   const tree = parser.parse(normalized);
   const root = tree.find((n) => n.svg);

@@ -20,6 +20,8 @@ function paintText(slide, o) {
     fontSize: o.fontSize, bold: o.bold, color: o.color, fontFace: o.fontFace,
     italic: o.italic,
     align: o.align, valign: o.valign, charSpacing: o.charSpacing,
+    ...(o.wrap === false ? { wrap: false } : {}),
+    ...(o.transparency ? { transparency: o.transparency } : {}),
   });
 }
 
@@ -59,7 +61,7 @@ function paintTable(slide, o) {
 
 function paintImage(slide, o) {
   const src = o.data ? { data: o.data } : { path: o.src }; // data URI 内联图 / 本地路径
-  slide.addImage({ ...src, x: o.x, y: o.y, w: o.w, h: o.h });
+  slide.addImage({ ...src, x: o.x, y: o.y, w: o.w, h: o.h, ...(o.sizing ? { sizing: o.sizing } : {}) });
 }
 
 const PAINTERS = {

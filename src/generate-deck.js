@@ -6,7 +6,21 @@ const llm = require('./llm');
 const { deriveTitle } = require('./normalize-outline');
 const llmprovider = require('./llmprovider');
 const assets = require('./assets');
+const htmlShot = require('./html-shot');
 const fs = require('fs');
+
+// Center-crop an image data URI to the deck aspect (default 16:9) so a square
+// AI illustration fills a wide slide without distortion. pptxgenjs stretches
+// data-URI images to the frame (its sizing:cover can't read their intrinsic
+// size), so the crop must happen on the bytes — here, deterministically via the
+// same headless browser used for baking. Falls back to the original on failure.
+async function coverCropDataUri(dataUri, w = 1280, h = 720) {
+  try {
+    const html = `<img src="${dataUri}" style="display:block;width:${w}px;height:${h}px;object-fit:cover;object-position:center">`;
+    const png = await htmlShot.renderToPng(html, { width: w, height: h, scale: 1 });
+    return `data:image/png;base64,${png.toString('base64')}`;
+  } catch { return dataUri; }
+}
 
 // 模块级 in-flight 锁：整册生成与单页重画共用一把，禁止并发（双击 / 生成中再点）。
 let inflight = false;
@@ -87,7 +101,10 @@ async function generateSlideImage({ role, index, docTitle, section, policy }) {
     if (!saved || !fs.existsSync(saved.path)) return null;
     const ext = saved.file.split('.').pop().toLowerCase();
     const mime = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : ext === 'webp' ? 'image/webp' : 'image/png';
-    return `data:${mime};base64,${fs.readFileSync(saved.path).toString('base64')}`;
+    const raw = `data:${mime};base64,${fs.readFileSync(saved.path).toString('base64')}`;
+    // Cover/section art is placed full-bleed into the 16:9 canvas; crop to that
+    // aspect so it is not stretched on export (preview == export).
+    return await coverCropDataUri(raw, 1280, 720);
   } catch { return null; }
 }
 
@@ -139,6 +156,17 @@ function splitOutline(markdown) {
   let chapterNo = 0;
   pages.forEach((page) => {
     if (page.role === 'section') page.sectionNo = String(++chapterNo).padStart(2, '0');
+  });
+
+  // Carry the current chapter onto its content pages, so a content footer can
+  // show the section identifier the source deck keeps in its page chrome.
+  let chapter = null;
+  pages.forEach((page) => {
+    if (page.role === 'section') {
+      chapter = { no: page.sectionNo, title: String(page.heading).replace(/^第[一二三四五六七八九十百\d]+[章节]\s*[:：]?\s*/, '') };
+    } else if (page.role === 'content' && chapter) {
+      page.chapter = chapter;
+    }
   });
 
   // 大纲无任何 ## 时兜底为单张封面页，避免出片阶段空册

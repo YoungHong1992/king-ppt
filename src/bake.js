@@ -215,8 +215,14 @@ async function bakeTemplateAssets(buffer, { stagingDir }) {
   const out = {};
   const pageTitleSize = 20;
 
-  // 内容页：排除首末页与章节页后，选顶部元素最多的一页做顶栏源
-  const sectionSet = new Set(pages.map((p, i) => (i > 0 && i < pages.length - 1 && isSectionLike(p, pageTitleSize) ? i : -1)).filter((i) => i >= 0));
+  // 章节过渡页识别：满屏插画 + 文本稀疏（章节号/章名/导语），这是「插画型分隔页」的最强信号；
+  // 或退回纯文字大字判定（isSectionLike）。首页是封面，单独处理，不计入。
+  const hasFullBleedImage = (p) => (p.objects || []).some((o) => o.type === 'image' && o.bbox
+    && o.bbox[2] >= canvas.width * 0.92 && o.bbox[3] >= canvas.height * 0.92);
+  const textObjCount = (p) => (p.objects || []).filter((o) => o.type === 'shape' && (o.texts || []).length
+    && String((o.texts[0].runs || []).map((r) => r.text).join('')).trim().length >= 2).length;
+  const isDivider = (p, i) => i > 0 && ((hasFullBleedImage(p) && textObjCount(p) <= 12) || isSectionLike(p, pageTitleSize));
+  const sectionSet = new Set(pages.map((p, i) => (isDivider(p, i) ? i : -1)).filter((i) => i >= 0));
   const contentIdx = pages.map((p, i) => i).filter((i) => i !== 0 && i !== pages.length - 1 && !sectionSet.has(i));
   const topbarSrcIdx = contentIdx.length
     ? contentIdx.reduce((best, i) => {
@@ -282,4 +288,23 @@ async function bakeTemplateAssets(buffer, { stagingDir }) {
   return out;
 }
 
-module.exports = { bakeTemplateAssets };
+// Bake a smooth transparent→bg gradient overlay mask (a PNG with a real alpha
+// gradient). Overlaid on cover/section illustrations at render time it fades the
+// lower band to the deck background for legible text — the source deck's own
+// gradient-scrim treatment — without a jarring flat block or banded rects.
+// preview==export holds because both consume this same PNG as an <image>.
+async function bakeScrim(stagingDir, bgHex, { file = 'scrim.png', css } = {}) {
+  const assetsDir = path.join(stagingDir, 'assets');
+  fs.mkdirSync(assetsDir, { recursive: true });
+  const h = String(bgHex || '000000').replace('#', '');
+  const r = parseInt(h.slice(0, 2), 16) || 0;
+  const g = parseInt(h.slice(2, 4), 16) || 0;
+  const b = parseInt(h.slice(4, 6), 16) || 0;
+  const grad = css || `linear-gradient(to bottom, rgba(${r},${g},${b},0) 0%, rgba(${r},${g},${b},0.04) 40%, rgba(${r},${g},${b},0.45) 74%, rgba(${r},${g},${b},0.9) 100%)`;
+  const html = `<div style="width:1280px;height:720px;background:${grad}"></div>`;
+  const png = await htmlShot.renderToPng(html, { width: 1280, height: 720, scale: 1, transparent: true });
+  fs.writeFileSync(path.join(assetsDir, file), png);
+  return `assets/${file}`;
+}
+
+module.exports = { bakeTemplateAssets, bakeScrim, pageToHtml, isSectionLike, isLicenseLike, findTitleObjs };

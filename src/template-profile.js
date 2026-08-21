@@ -6,7 +6,7 @@ const path = require('path');
 const JSZip = require('jszip');
 const { XMLParser } = require('fast-xml-parser');
 const { parseSourcePages } = require('./pptx-pages');
-const { bakeTemplateAssets } = require('./bake');
+const { bakeTemplateAssets, bakeScrim } = require('./bake');
 
 const textOf = (page) => (page.objects || [])
   .filter((o) => o.type === 'shape' && o.texts && o.texts.length)
@@ -39,6 +39,46 @@ const saturation = (hex) => {
   const rgb = [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16) / 255);
   return Math.max(...rgb) - Math.min(...rgb);
 };
+const contrast = (a, b) => Math.abs(lum(a) - lum(b));
+const mix = (a, b, t) => {
+  const ch = (h) => [0, 2, 4].map((i) => parseInt(String(h).replace('#', '').slice(i, i + 2), 16));
+  const [pa, pb] = [ch(a), ch(b)];
+  return pa.map((v, i) => Math.round(v * (1 - t) + pb[i] * t).toString(16).padStart(2, '0')).join('').toUpperCase();
+};
+
+// Derive a contrast-correct, generic token set from the measured palette.
+// ink = main text (high contrast vs bg), muted = secondary text, panel = card
+// surface (near bg but separable and still readable under ink), accent/2/3 =
+// saturated marks. Works for dark and light source decks — no sample constants.
+function deriveTokens(palette, bg, roles) {
+  const isDark = lum(bg) < 0.5;
+  const measuredTitle = roles.content?.slot?.color || roles.cover?.slots?.title?.color;
+  let ink = measuredTitle && contrast(measuredTitle, bg) > 0.45 ? measuredTitle : null;
+  if (!ink) {
+    ink = palette.filter((p) => contrast(p.hex, bg) > 0.5 && (isDark ? lum(p.hex) > 0.55 : lum(p.hex) < 0.4))
+      .sort((a, b) => b.uses - a.uses)[0]?.hex || (isDark ? 'F1F5F9' : '111827');
+  }
+  const muted = palette.filter((p) => p.hex !== ink && p.hex !== bg
+    && contrast(p.hex, bg) > 0.22 && contrast(p.hex, bg) < contrast(ink, bg))
+    .sort((a, b) => b.uses - a.uses)[0]?.hex || mix(ink, bg, 0.45);
+  const panel = palette.filter((p) => p.hex !== bg && contrast(p.hex, bg) <= 0.16 && contrast(p.hex, ink) > 0.4)
+    .sort((a, b) => b.uses - a.uses)[0]?.hex || mix(bg, ink, isDark ? 0.09 : 0.06);
+  const used = new Set([bg, ink, panel, muted]);
+  const accents = palette.filter((p) => !used.has(p.hex) && saturation(p.hex) > 0.28 && contrast(p.hex, bg) > 0.12)
+    .sort((a, b) => saturation(b.hex) * Math.sqrt(b.uses) - saturation(a.hex) * Math.sqrt(a.uses))
+    .map((p) => p.hex);
+  const accent = accents[0] || (isDark ? '38BDF8' : '2563EB');
+  return { bg, ink, muted, panel, accent, accent2: accents[1] || accent, accent3: accents[2] || accents[1] || accent, isDark };
+}
+
+// A generation-time art-direction hint for cover/section imagery, derived from
+// the template's own palette mood so new-topic illustrations match its style
+// (not a hardcoded warm-paper look). The subject/topic is added by the caller.
+function imageStyleHint(tokens) {
+  return tokens.isDark
+    ? 'cinematic dark editorial illustration, deep navy background, volumetric lighting, subtle glowing accents, high detail, photographic depth, no text, no logos'
+    : 'clean bright editorial illustration, airy background, soft natural light, refined minimal composition, generous negative space, no text, no logos';
+}
 function pageBackground(page, canvas) {
   if (page?.background?.color) return page.background.color;
   const full = (page?.objects || []).filter((o) => o.type === 'shape' && o.fill?.color && o.bbox
@@ -95,11 +135,10 @@ async function profileFromPptx(buffer, { stagingDir } = {}) {
   }));
   const palette = colorsOf(parsed.pages);
   const contentPage = parsed.pages[baked.topbar?.sourcePage || 0];
-  const bg = pageBackground(contentPage, parsed.canvas) || palette.find((x) => lum(x.hex) > 0.82)?.hex || 'FFFFFF';
-  const primary = roles.content?.slot?.color || roles.cover?.slots?.title?.color || palette[0]?.hex || '1F4E79';
-  const accent = palette.filter((x) => x.hex !== bg && x.hex !== primary).sort((a, b) => saturation(b.hex) * Math.sqrt(b.uses) - saturation(a.hex) * Math.sqrt(a.uses))[0]?.hex || primary;
-  const text = palette.filter((x) => lum(x.hex) < 0.42 && x.hex !== primary).sort((a, b) => b.uses - a.uses)[0]?.hex || '333333';
-  const surface = palette.filter((x) => x.hex !== bg && lum(x.hex) > 0.75).sort((a, b) => b.uses - a.uses)[0]?.hex || bg;
+  const bg = pageBackground(contentPage, parsed.canvas)
+    || palette.find((x) => lum(x.hex) > 0.82)?.hex
+    || palette[palette.length - 1]?.hex || 'FFFFFF';
+  const tokens = deriveTokens(palette, bg, roles);
   const profile = {
     version: 1,
     canvas: parsed.canvas,
@@ -113,9 +152,12 @@ async function profileFromPptx(buffer, { stagingDir } = {}) {
       titleRects: families.map((f) => f.metrics.title && f.metrics.title.rect).filter(Boolean),
       contentTitleRect: roles.content?.slot?.rect || null,
     },
-    tokens: { bg, primary, accent, text, surface },
+    tokens,
+    imageStyle: imageStyleHint(tokens),
     extraction: { mode: 'baked-reference', confidence: roles.cover && roles.content ? 0.92 : 0.68 },
   };
+  // Smooth gradient overlay mask (transparent -> bg) for cover/section imagery.
+  try { profile.scrim = await bakeScrim(stagingDir, tokens.bg); } catch { profile.scrim = null; }
   fs.writeFileSync(path.join(stagingDir, 'template-profile.json'), JSON.stringify(profile, null, 2));
   return profile;
 }
