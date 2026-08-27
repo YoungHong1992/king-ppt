@@ -38,10 +38,12 @@ function attrsOf(node) {
 const SHAPE_TAGS = ['g', 'rect', 'circle', 'ellipse', 'line', 'text', 'polygon', 'polyline', 'path', 'image'];
 
 // preserveOrder 树的层间结构：父节点 = { <tag>: [子节点...], ':@': {属性} }。
-// 递归收集某层指定标签的元素；<g> 只支持 translate，叠加到子元素坐标上
-function flatten(children, tag, tx, ty, out) {
+// 按输入顺序收集元素。不能按 tag 分批遍历，否则最后处理的 image 会压住
+// 原本位于其后的 text，造成预览与导出的 z-order 不一致。
+function flatten(children, tx, ty, out) {
   for (const child of children) {
-    if (!(tag in child)) continue;
+    const tag = SHAPE_TAGS.find((t) => t in child);
+    if (!tag) continue;
     if (tag === 'g') {
       const a = attrsOf(child);
       const tr = String(a['@_transform'] || '');
@@ -49,7 +51,7 @@ function flatten(children, tag, tx, ty, out) {
       const gx = tx + (m ? Number(m[1]) : 0);
       const gy = ty + (m ? Number(m[2] || 0) : 0);
       const gc = child['g'] || [];
-      for (const t of SHAPE_TAGS) flatten(gc, t, gx, gy, out);
+      flatten(gc, gx, gy, out);
     } else {
       // preserveOrder 下元素形如 { <tag>: [ { '#text': '内容' }, ... ], ':@': {属性} }
       const inner = child[tag] || [];
@@ -110,10 +112,19 @@ function imageObject(el, k) {
   const a = el.attrs;
   const href = a['@_href'] || a['@_xlink:href'];
   if (!href || !/^data:/.test(String(href))) return null;
+  const x = (el.tx + num(a['@_x'])) * k;
+  const y = (el.ty + num(a['@_y'])) * k;
+  const w = num(a['@_width']) * k;
+  const h = num(a['@_height']) * k;
+  // preserveAspectRatio="… slice" == CSS object-fit:cover: scale to fill the
+  // frame and crop, no distortion. pptxgenjs stretches by default, so map slice
+  // to sizing:{type:'cover'} — otherwise a square illustration gets squished
+  // into the 16:9 frame (preview honored slice; export must too).
+  const par = String(a['@_preserveAspectRatio'] || '');
+  const cover = /\bslice\b/.test(par);
   return {
-    kind: 'image', data: String(href),
-    x: (el.tx + num(a['@_x'])) * k, y: (el.ty + num(a['@_y'])) * k,
-    w: num(a['@_width']) * k, h: num(a['@_height']) * k,
+    kind: 'image', data: String(href), x, y, w, h,
+    ...(cover ? { sizing: { type: 'cover', w, h } } : {}),
   };
 }
 function textObject(el, k) {
@@ -123,8 +134,10 @@ function textObject(el, k) {
   const anchor = String(a['@_text-anchor'] || 'start');
   let text = el.text.trim();
   if (!text) return null;
-  const wIn = Math.min(textWidthIn(text, fontSize) + 0.1, 1e6);
-  const hIn = (fontSize * 1.35) / 72;
+  const explicitW = num(a['@_data-box-w'], 0);
+  const explicitH = num(a['@_data-box-h'], 0);
+  const wIn = explicitW > 0 ? explicitW * k : Math.min(textWidthIn(text, fontSize) + 0.1, 1e6);
+  const hIn = explicitH > 0 ? explicitH * k : (fontSize * 1.35) / 72;
   const xIn = (el.tx + num(a['@_x'])) * k;
   const yIn = (el.ty + num(a['@_y'])) * k;
   const boxX = anchor === 'middle' ? xIn - wIn / 2 : anchor === 'end' ? xIn - wIn : xIn;
@@ -138,9 +151,12 @@ function textObject(el, k) {
     text,
     fontSize: Math.round(fontSize * 10) / 10,
     bold: String(a['@_font-weight'] || '').match(/bold|[6-9]00/i) !== null,
+    italic: String(a['@_font-style'] || '').toLowerCase() === 'italic',
+    fontFace: String(a['@_font-family'] || '').split(',')[0].trim().replace(/^['"]|['"]$/g, '') || undefined,
     color: c || '333333',
     align: anchor === 'middle' ? 'center' : anchor === 'end' ? 'right' : 'left',
     valign: 'middle',
+    wrap: false, // each <text> is one pre-wrapped line; never let PowerPoint re-wrap (preview == export)
     ...(op < 1 ? { transparency: Math.round((1 - op) * 100) } : {}),
   };
 }
@@ -154,6 +170,7 @@ function svgToScene(svgString, canvas) {
     attributeNamePrefix: '@_',
     preserveOrder: true,
     trimValues: true,
+    parseTagValue: false, // keep text nodes as strings so "01"/"02" don't become 1/2
   });
   const tree = parser.parse(normalized);
   const root = tree.find((n) => n.svg);
@@ -167,7 +184,7 @@ function svgToScene(svgString, canvas) {
 
   const els = [];
   const rootChildren = root['svg'] || [];
-  for (const t of SHAPE_TAGS) flatten(rootChildren, t, 0, 0, els);
+  flatten(rootChildren, 0, 0, els);
 
   const objects = [];
   for (const el of els) {

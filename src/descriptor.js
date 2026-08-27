@@ -1,20 +1,33 @@
-// 模板描述符加载与枚举：项目 templates/（预设）+ KING_PPT_HOME/templates/（用户上传）
+// 模板描述符加载与枚举：只认用户上传的模板（KING_PPT_HOME/templates/）。
+// 工程不内置任何画廊模板，也没有默认模板兜底——未指定/找不到模板时直接抛清晰错误，
+// 由上层（路由/前端）提示"请先上传模板"。提取上传件的结构脚手架见 src/base-descriptor.js。
 const fs = require('fs');
 const path = require('path');
 const { TEMPLATES_DIR } = require('./paths');
+const { loadTemplateProfile } = require('./template-profile');
 
-const PRESET_DIR = path.join(__dirname, '..', 'templates');
 const USER_DIR = TEMPLATES_DIR;
 const SUPPORTED_SCHEMA_MAJOR = 1; // schemaVersion "1.x" 均兼容
-const DEFAULT_TEMPLATE = 'classic-blue';
 
 const cache = new Map();
+const themeCache = new Map();
 
+const DEFAULT_SCALE = {
+  display: 96, sectionNo: 120, sectionTitle: 64,
+  pageTitle: 44, eyebrow: 22, body: 26, caption: 20, footer: 16,
+};
+
+function notFound(id) {
+  const e = new Error(id ? `模板「${id}」不存在，请先上传模板` : '未指定模板，请先上传并选择一个模板');
+  e.code = 'TEMPLATE_NOT_FOUND';
+  return e;
+}
+
+// 定位模板目录（仅用户上传目录）。找不到返回 null。
 function templateDir(id) {
-  const preset = path.join(PRESET_DIR, id);
-  if (fs.existsSync(path.join(preset, 'theme.json')) || fs.existsSync(path.join(preset, 'template.json'))) return preset;
-  const user = path.join(USER_DIR, id);
-  if (fs.existsSync(path.join(user, 'theme.json')) || fs.existsSync(path.join(user, 'template.json'))) return user;
+  if (!id || !/^[a-zA-Z0-9_-]+$/.test(id)) return null;
+  const dir = path.join(USER_DIR, id);
+  if (fs.existsSync(path.join(dir, 'theme.json')) || fs.existsSync(path.join(dir, 'template.json'))) return dir;
   return null;
 }
 
@@ -30,7 +43,7 @@ function scanDir(dir, source) {
     if (!e.isDirectory()) continue;
     const themeFile = path.join(dir, e.name, 'theme.json');
     const tplFile = path.join(dir, e.name, 'template.json');
-    // SVG-as-IR：优先 theme.json（新主题包）；无则回退旧 template.json（上传模板 / 未迁移预设）
+    // SVG-as-IR：优先 theme.json（新主题包）；无则回退旧 template.json（上传模板）
     if (fs.existsSync(themeFile)) {
       try {
         const t = JSON.parse(fs.readFileSync(themeFile, 'utf8'));
@@ -57,16 +70,13 @@ function paletteHexOf(theme) {
 }
 
 function listDescriptors() {
-  return [...scanDir(PRESET_DIR, 'preset'), ...scanDir(USER_DIR, 'uploaded')];
+  return scanDir(USER_DIR, 'uploaded');
 }
 
-function loadDescriptor(id = DEFAULT_TEMPLATE) {
-  if (cache.has(id)) return cache.get(id);
+function loadDescriptor(id) {
+  if (id && cache.has(id)) return cache.get(id);
   const dir = templateDir(id);
-  if (!dir) {
-    if (id !== DEFAULT_TEMPLATE) return loadDescriptor(DEFAULT_TEMPLATE);
-    throw new Error(`默认模板 ${DEFAULT_TEMPLATE} 不存在`);
-  }
+  if (!dir) throw notFound(id);
   const d = JSON.parse(fs.readFileSync(path.join(dir, 'template.json'), 'utf8'));
   const major = Number(String(d.schemaVersion || '1.0').split('.')[0]);
   if (major > SUPPORTED_SCHEMA_MAJOR) {
@@ -78,18 +88,27 @@ function loadDescriptor(id = DEFAULT_TEMPLATE) {
   return d;
 }
 
-// 供测试或模板更新后使用
+// 供测试或模板更新/删除后使用
 function clearCache() {
   cache.clear();
   themeCache.clear();
 }
 
+// 删除一份上传模板：移除 USER_DIR/<id> 整个目录，并清缓存。
+function deleteTemplate(id) {
+  const dir = templateDir(id);
+  if (!dir) throw notFound(id);
+  const resolved = path.resolve(dir);
+  // 安全：必须落在 USER_DIR 之内，杜绝路径穿越
+  if (resolved !== path.resolve(USER_DIR) && !resolved.startsWith(path.resolve(USER_DIR) + path.sep)) {
+    throw new Error('非法的模板路径');
+  }
+  fs.rmSync(resolved, { recursive: true, force: true });
+  clearCache();
+  return true;
+}
+
 // ---------- 主题令牌（SVG-as-IR 创作契约的数据源） ----------
-const themeCache = new Map();
-const DEFAULT_SCALE = {
-  display: 96, sectionNo: 120, sectionTitle: 64,
-  pageTitle: 44, eyebrow: 22, body: 26, caption: 20, footer: 16,
-};
 
 // 从旧 template.json 合成主题令牌（上传模板尚无 theme.json 时的回退）
 function themeFromDescriptor(d) {
@@ -118,14 +137,11 @@ function themeFromDescriptor(d) {
   };
 }
 
-// 加载主题令牌：theme.json 优先；无则从 template.json 合成。永远返回可用主题。
-function loadTheme(id = DEFAULT_TEMPLATE) {
-  if (themeCache.has(id)) return themeCache.get(id);
+// 加载主题令牌：theme.json 优先；无则从 template.json 合成。找不到模板则抛错。
+function loadTheme(id) {
+  if (id && themeCache.has(id)) return themeCache.get(id);
   const dir = templateDir(id);
-  if (!dir) {
-    if (id !== DEFAULT_TEMPLATE) return loadTheme(DEFAULT_TEMPLATE);
-    throw new Error(`默认主题 ${DEFAULT_TEMPLATE} 不存在`);
-  }
+  if (!dir) throw notFound(id);
   const themeFile = path.join(dir, 'theme.json');
   let theme;
   if (fs.existsSync(themeFile)) {
@@ -143,7 +159,7 @@ function loadTheme(id = DEFAULT_TEMPLATE) {
 }
 
 // 主题的 layouts/*.svg 原型页（若存在）；返回 { name, svg }[]
-function loadThemeLayouts(id = DEFAULT_TEMPLATE) {
+function loadThemeLayouts(id) {
   const theme = loadTheme(id);
   const dir = path.join(theme._dir, 'layouts');
   const out = [];
@@ -156,4 +172,9 @@ function loadThemeLayouts(id = DEFAULT_TEMPLATE) {
   return out;
 }
 
-module.exports = { loadDescriptor, listDescriptors, clearCache, loadTheme, loadThemeLayouts, DEFAULT_TEMPLATE, PRESET_DIR, USER_DIR };
+function loadProfile(id) {
+  const dir = templateDir(id);
+  return dir ? loadTemplateProfile(dir) : null;
+}
+
+module.exports = { loadDescriptor, listDescriptors, clearCache, deleteTemplate, loadTheme, loadThemeLayouts, loadProfile, USER_DIR };
