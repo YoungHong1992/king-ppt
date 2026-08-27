@@ -9,7 +9,6 @@ node_modules/
 *.serve.log
 
 # Local visual QA and benchmark artifacts
-.tmp-style-eval/
 .vision/
 exports/
 
@@ -20,6 +19,8 @@ exports/
 dashi-ppt-skill/
 ppt-master/
 
-# 本地临时评审/探针产物
-.tmp-*.json
-.tmp-v3probe/
+# 本地临时评审/探针产物（统一前缀，.tmp- 开头一律不入库）
+.tmp-*
+
+# Claude Code 本机个人配置（用户级全局 ignore 已挡一层，这里兜底其他机器）
+.claude/settings.local.json
