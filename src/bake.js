@@ -8,6 +8,7 @@ const fs = require('fs');
 const path = require('path');
 const { parseSourcePages } = require('./pptx-pages');
 const htmlShot = require('./html-shot');
+const pngSample = require('./png-sample');
 const { isDecorativeText } = require('./render-guard');
 
 const SHAPE_CSS = {
@@ -227,21 +228,67 @@ async function bakeTemplateAssets(buffer, { stagingDir }) {
   const out = {};
   const pageTitleSize = 20;
 
-  // 章节过渡页识别：满屏插画 + 文本稀疏（章节号/章名/导语），这是「插画型分隔页」的最强信号；
-  // 或退回纯文字大字判定（isSectionLike）。首页是封面，单独处理，不计入。
-  const hasFullBleedImage = (p) => (p.objects || []).some((o) => o.type === 'image' && o.bbox
-    && o.bbox[2] >= canvas.width * 0.92 && o.bbox[3] >= canvas.height * 0.92);
+  // ---- 页面底色指纹：全部页渲成一张拼图，取每页边缘环带的平均色 ----
+  // 版式角色的几何信号都会说谎：透明 padding 大图的 bbox 能冒充满幅插画、
+  // 图标素材表的小文本多到逃过稀疏阈值。渲染出来的像素不会骗人——底色
+  // 相同的页面才是同一个"版式家族"。指纹失败（无浏览器等）则退回纯几何规则。
+  let bgColors = null;
+  try {
+    const cols = Math.max(3, Math.ceil(Math.sqrt(pages.length)));
+    const rows = Math.ceil(pages.length / cols);
+    const cwPx = 320, chPx = 180;
+    const html = `<div style="position:relative;width:${cols * cwPx}px;height:${rows * chPx}px">`
+      + pages.map((p, i) => `<div style="position:absolute;left:${(i % cols) * cwPx}px;top:${Math.floor(i / cols) * chPx}px;width:${cwPx}px;height:${chPx}px;overflow:hidden">${pageToHtml(p, canvas, mediaDir)}</div>`).join('')
+      + '</div>';
+    bgColors = pngSample.sampleCells(await htmlShot.renderToPng(html, { width: cols * cwPx, height: rows * chPx, scale: 1 }), cols, rows);
+  } catch { /* 指纹不可用 */ }
+
   const textObjCount = (p) => (p.objects || []).filter((o) => o.type === 'shape' && (o.texts || []).length
     && String((o.texts[0].runs || []).map((r) => r.text).join('')).trim().length >= 2).length;
-  const isDivider = (p, i) => i > 0 && ((hasFullBleedImage(p) && textObjCount(p) <= 12) || isSectionLike(p, pageTitleSize));
+
+  // 图标/图表素材表：几十个铺不满版面的小对象堆成的"清单页"，不是任何角色
+  // 的合法样板——从一切候选里剔除。
+  const TINY_AREA = 0.005; // <0.5% 画布
+  const sheetOf = (p) => (p.objects || []).filter((o) => o.bbox && (o.bbox[2] * o.bbox[3]) / (canvas.width * canvas.height) < TINY_AREA).length;
+  const sheets = new Set(pages.map((p, i) => (sheetOf(p) >= 25 ? i : -1)).filter((i) => i >= 0));
+
+  // 中间页里最大的同底色组 = 正文版式家族；远离该底色的中间页是"换底页"
+  // （章节分隔、致谢等）。无指纹时两者都视为正文家族，行为与旧版一致。
+  const middles = pages.map((p, i) => i).filter((i) => i !== 0 && i !== pages.length - 1 && !sheets.has(i));
+  let modalBg = null;
+  let bodyFamily = middles;
+  if (bgColors && middles.length) {
+    const TH = 48;
+    let bestGrp = null, bestSize = -1;
+    for (const c of middles) {
+      const grp = middles.filter((x) => pngSample.dist(bgColors[x], bgColors[c]) <= TH);
+      if (grp.length > bestSize) { bestSize = grp.length; bestGrp = grp; }
+    }
+    if (bestGrp) {
+      bodyFamily = bestGrp;
+      modalBg = bgColors[bestGrp[0]];
+    }
+  }
+  const FAMILY_TH = 70; // 明显换底
+  const offFamily = (i) => !bgColors || !modalBg || pngSample.dist(bgColors[i], modalBg) > FAMILY_TH;
+
+  // 章节分隔页 = 换底且文本稀疏；或纯文字大字版式的经典分隔（isSectionLike，
+  // 与底色无关地保留——有些模板的分隔页就用正文同款底色）。
+  const isDivider = (p, i) => i > 0 && !sheets.has(i)
+    && ((offFamily(i) && textObjCount(p) <= 16) || isSectionLike(p, pageTitleSize));
   const sectionSet = new Set(pages.map((p, i) => (isDivider(p, i) ? i : -1)).filter((i) => i >= 0));
-  const contentIdx = pages.map((p, i) => i).filter((i) => i !== 0 && i !== pages.length - 1 && !sectionSet.has(i));
-  const topbarSrcIdx = contentIdx.length
-    ? contentIdx.reduce((best, i) => {
+  const contentIdx = middles.filter((i) => !sectionSet.has(i));
+
+  // 正文顶栏样板从"正文家族"里选（家族为空时逐级放宽到全部中间页）
+  let topbarPool = contentIdx.filter((i) => bodyFamily.includes(i));
+  if (!topbarPool.length) topbarPool = contentIdx;
+
+  const topbarSrcIdx = topbarPool.length
+    ? topbarPool.reduce((best, i) => {
       const topObjs = (pages[i].objects || []).filter((o) => o.bbox[1] < 1.3).length;
       const bestObjs = (pages[best].objects || []).filter((o) => o.bbox[1] < 1.3).length;
       return topObjs > bestObjs ? i : best;
-    }, contentIdx[0])
+    }, topbarPool[0])
     : -1;
 
   // 顶栏条：取内容页顶部 1.3in（含 logo/校名/装饰），标题文字实测叠加
@@ -269,7 +316,8 @@ async function bakeTemplateAssets(buffer, { stagingDir }) {
     const { slots, imageSlot } = await bakePage({ page: pages[0], canvas, mediaDir, file: path.join(assetsDir, 'baked-cover.png') });
     if (slots.title) out.cover = { file: 'baked-cover.png', sourcePage: 0, slots, imageSlot };
   }
-  // 章节页：优先实测识别的章节页，否则末页（答辩类模板末页即致谢页）
+  // 章节页：优先实测识别的章节页（分隔集合按页序，第一个即最早的过渡页），
+  // 否则末页（答辩类模板末页即致谢页）
   {
     const idx = sectionSet.size ? [...sectionSet][0] : pages.length - 1;
     const { slots, imageSlot } = await bakePage({ page: pages[idx], canvas, mediaDir, file: path.join(assetsDir, 'baked-section.png') });

@@ -4,7 +4,6 @@
 // page by page and stays legible on any source palette (light or dark).
 const fs = require('fs');
 const path = require('path');
-const zlib = require('zlib');
 const { readableOn } = require('./render-guard');
 
 const esc = (s) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -84,56 +83,99 @@ function asset(profile, templateDir, role) {
   const p = profile?.roles?.[role];
   return p?.asset ? toDataUri(path.join(templateDir, p.asset)) : null;
 }
-// 烘焙顶栏（内容页 chrome 图）里常带有模板自己的标记图形（如本模板的 2×2 橙色方格），
-// 页面标题若从页边距起排就会压在标记上。这里解码 PNG 像素，在「标题带」内扫描
-// 与背景差异大的标记色块，返回标题的安全起点（英寸）。任意上传模板通用：
-// 没有标记、解码失败或图不是 PNG 时回退页边距 0.84。按文件路径+mtime 缓存。
-const _insetCache = new Map();
+// 烘焙顶栏（内容页 chrome 图）里带有模板自己的品牌资产：左侧角标会顶着页面
+// 标题、右侧 logo/公司名会被右上角的章节 kicker 压住。这里解码 PNG 像素扫描
+// 「标题带」内的墨迹分布：chromeTitleInset 返回标题安全起点，chromeRightInset
+// 返回右侧品牌块的左边界（英寸，没有则 0）。任意上传模板通用：非 PNG 或解码
+// 失败一律回退默认值。按文件路径+mtime 缓存像素。
+const pngSample = require('./png-sample');
+const _stripCache = new Map();
+function stripPixels(assetPath) {
+  try {
+    if (!assetPath || !fs.existsSync(assetPath)) return null;
+    const mtime = fs.statSync(assetPath).mtimeMs;
+    const hit = _stripCache.get(assetPath);
+    if (hit && hit.mtime === mtime) return hit.img;
+    const img = pngSample.decode(fs.readFileSync(assetPath)); // Chrome 截图固定 8-bit 非隔行真色；否则在此抛错走回退
+    _stripCache.set(assetPath, { mtime, img });
+    return img;
+  } catch { return null; }
+}
+const _inkDist = (a, b) => Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]) + Math.abs(a[2] - b[2]);
+
 function chromeTitleInset(assetPath, canvasW) {
   try {
-    if (!assetPath || !fs.existsSync(assetPath)) return 0.84;
-    const mtime = fs.statSync(assetPath).mtimeMs;
-    const hit = _insetCache.get(assetPath);
-    if (hit && hit.mtime === mtime) return hit.inset;
-    const buf = fs.readFileSync(assetPath);
-    if (buf.readUInt32BE(0) !== 0x89504e47) return 0.84;
-    let pos = 8, w = 0, h = 0, ctype = 0;
-    const idat = [];
-    while (pos + 12 < buf.length) {
-      const len = buf.readUInt32BE(pos);
-      const type = buf.toString('ascii', pos + 4, pos + 8);
-      const data = buf.slice(pos + 8, pos + 8 + len);
-      if (type === 'IHDR') { w = data.readUInt32BE(0); h = data.readUInt32BE(4); ctype = data[9]; }
-      else if (type === 'IDAT') idat.push(data);
-      pos += 12 + len;
-    }
-    if (!w || (ctype !== 2 && ctype !== 6)) return 0.84;
-    const ch = ctype === 6 ? 4 : 3;
-    const raw = zlib.inflateSync(Buffer.concat(idat));
-    const stride = w * ch;
-    const px = (x, y) => {
-      const i = y * stride + x * ch;
-      return [raw[i], raw[i + 1], raw[i + 2]];
-    };
-    const bg = px(w - 1, 0); // 右上角像素即页面底色
-    const dist = (a, b) => Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]) + Math.abs(a[2] - b[2]);
+    const img = stripPixels(assetPath);
+    if (!img || !img.w || (img.ch !== 3 && img.ch !== 4)) return 0.84;
+    const bg = pngSample.pxAt(img, img.w - 1, 0); // 右上角像素即页面底色
     let x1 = -1;
-    const colLim = Math.floor(w * 0.15);
-    const rowTop = Math.floor(h * 0.18);
-    const rowBot = Math.floor(h * 0.75); // 只扫标题带：避开底栏装饰线
-    for (let y = rowTop; y < Math.min(rowBot, h); y++) {
+    const colLim = Math.floor(img.w * 0.15);
+    const rowTop = Math.floor(img.h * 0.18);
+    const rowBot = Math.floor(img.h * 0.75); // 只扫标题带：避开底栏装饰线
+    for (let y = rowTop; y < Math.min(rowBot, img.h); y++) {
       let last = -1;
       for (let x = 0; x < colLim; x++) {
-        if (dist(px(x, y), bg) > 120) last = x;
+        if (_inkDist(pngSample.pxAt(img, x, y), bg) > 120) last = x;
       }
       if (last > x1) x1 = last;
     }
-    const iconRightIn = x1 < 0 ? 0 : (x1 + 1) * (canvasW / w);
-    const inset = Math.min(Math.max(0.84, iconRightIn + 0.14), canvasW * 0.3);
-    _insetCache.set(assetPath, { mtime, inset });
-    return inset;
+    const iconRightIn = x1 < 0 ? 0 : (x1 + 1) * (canvasW / img.w);
+    return Math.min(Math.max(0.84, iconRightIn + 0.14), canvasW * 0.3);
   } catch { return 0.84; }
 }
+
+function chromeRightInset(assetPath, canvasW) {
+  try {
+    const img = stripPixels(assetPath);
+    if (!img || !img.w) return 0;
+    const bg = pngSample.pxAt(img, img.w - 1, 0);
+    const rowTop = Math.floor(img.h * 0.15), rowBot = Math.min(img.h, Math.floor(img.h * 0.8));
+    const xStart = Math.floor(img.w * 0.5);
+    const inkCol = [];
+    for (let x = xStart; x < img.w; x++) {
+      let has = false;
+      for (let y = rowTop; y < rowBot; y += 2) {
+        if (_inkDist(pngSample.pxAt(img, x, y), bg) > 120) { has = true; break; }
+      }
+      inkCol.push(has);
+    }
+    // 从右向左聚最右内容块：块内允许 ≤3% 宽的镂空/字间隙
+    const gapTol = Math.max(3, Math.round(img.w * 0.03));
+    let i = inkCol.length - 1;
+    while (i >= 0 && !inkCol[i]) i--;
+    if (i < 0) return 0;
+    let left = i, gap = 0;
+    while (i >= 0) {
+      if (inkCol[i]) { left = i; gap = 0; } else if (++gap > gapTol) break;
+      i--;
+    }
+    const leftIn = (xStart + left) * (canvasW / img.w);
+    const blockWIn = (img.w - left - xStart) * (canvasW / img.w);
+    if (blockWIn < canvasW * 0.04 || blockWIn > canvasW * 0.24) return 0; // 过小是噪点，过大是满底装饰
+    return Math.min(Math.max(leftIn, canvasW - 2.9), canvasW - 0.72);
+  } catch { return 0; }
+}
+// 烤底图上某矩形（英寸）的平均色——取文字落点的局部明暗，供对比度选色回退。
+function surfaceColorAt(assetPath, rx, ry, rw, rh, canvasW, canvasH) {
+  try {
+    const img = stripPixels(assetPath);
+    if (!img || !img.w || !canvasW || !canvasH) return null;
+    const x0 = Math.max(0, Math.floor(rx / canvasW * img.w));
+    const y0 = Math.max(0, Math.floor(ry / canvasH * img.h));
+    const x1 = Math.min(img.w - 1, Math.ceil((rx + rw) / canvasW * img.w));
+    const y1 = Math.min(img.h - 1, Math.ceil((ry + rh) / canvasH * img.h));
+    let r = 0, g = 0, b = 0, n = 0;
+    const stepX = Math.max(1, Math.floor((x1 - x0) / 24)), stepY = Math.max(1, Math.floor((y1 - y0) / 12));
+    for (let y = y0; y <= y1; y += stepY) {
+      for (let x = x0; x <= x1; x += stepX) {
+        const p = pngSample.pxAt(img, x, y);
+        r += p[0]; g += p[1]; b += p[2]; n++;
+      }
+    }
+    return n ? '#' + [r, g, b].map((v) => Math.round(v / n).toString(16).padStart(2, '0')).join('') : null;
+  } catch { return null; }
+}
+
 function fontFamily(profile, raw) {
   const s = String(raw || '');
   if (s.startsWith('+mj')) return profile?.invariants?.fontFamilies?.title || profile?.invariants?.fonts?.[0] || 'Microsoft YaHei';
@@ -241,8 +283,6 @@ function renderContent(profile, templateDir, section, index, total, imageData) {
   };
   const tslot = titleSlot.rect;
   const title = textAtSlot(titleSlot, profile, section.heading, { maxLines: 1, fallbackColor: ink, maxSize: 30 });
-  // Title underline (template cue) instead of a left tick.
-  const underline = rect(profile, tslot[0], tslot[1] + tslot[3] + 0.04, 1.15, 0.045, { fill: accent });
 
   const [bx, by, bw] = role.bodyRect || [0.85, 1.6, W - 1.7, 0];
   const allItems = bodyItems(section);
@@ -364,13 +404,16 @@ function renderContent(profile, templateDir, section, index, total, imageData) {
   parts += versePanel;
 
   const chap = section.chapter ? `${section.chapter.no}  ${section.chapter.title}` : '';
+  // 章节 kicker 锚在烘焙顶栏右侧品牌区（logo/公司名）之前，避免压字
+  const logoLeft = chromeRightInset(role.asset ? path.join(templateDir, role.asset) : null, W);
+  const kEndIn = logoLeft > 0 ? logoLeft - 0.22 : W - 0.84;
   const kicker = section.chapter
-    ? textLine((W - 0.84) * scale, (tslot[1] + 0.52) * scale, `${section.chapter.no} · ${section.chapter.title}`.slice(0, 22), { size: 14, fill: accent, family: bodyFont, anchor: 'end' })
+    ? textLine(kEndIn * scale, (tslot[1] + 0.52) * scale, `${section.chapter.no} · ${section.chapter.title}`.slice(0, 22), { size: 14, fill: accent, family: bodyFont, anchor: 'end' })
     : '';
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720">`
     + rect(profile, 0, 0, W, profile.canvas.height, { fill: bg })
     + (chrome ? `<image x="0" y="0" width="1280" height="${(role.hIn * scale).toFixed(1)}" href="${chrome}"/>` : '')
-    + parts + underline + title + kicker
+    + parts + title + kicker
     + footerChrome(profile, { index, total, left: chap, bodyFont, muted })
     + `</svg>`;
 }
@@ -436,13 +479,26 @@ function renderCover(profile, templateDir, section, imageData, docTitle) {
   // 烤底走极简三行栈；AI 生图封面是干净画布，才画 tick + 金句条补足层次。
   const showTag = Boolean(tagline) && Boolean(imageData) && tagBase < H - 0.35;
 
+  // 烤底封面时，文字落在模板自己的画面上——全局 token 是整册主色调，压不住烤底图
+  // 的局部深浅（浅色主题的封面常是深色横幅）。bake 已记录模板原标题的真实颜色/
+  // 对齐，优先复刻；AI 生图无此依据，仍走全局 token。规则与 textAtSlot 保持一致。
+  const slotFill = (slot, fb) => {
+    const c = slot && slot.color ? `#${String(slot.color).replace('#', '')}` : null;
+    return imageData ? fb : (c || fb);
+  };
+  const titleFill = slotFill(slots.title, ink);
+  const subFill = slotFill(slots.subtitle, muted);
+  const subX = !imageData && slots.subtitle?.rect ? slots.subtitle.rect[0] : tx;
+  const tAlign = !imageData && slots.title?.align === 'center' ? 'middle' : 'start';
+  const titleXpx = tAlign === 'middle' ? ((slots.title.rect[0] + slots.title.rect[2] / 2) * scale) : tx * scale;
+
   let parts = '';
   if (imageData) {
     parts += rect(profile, tx, y - 0.36, 1.9, 0.035, { fill: accent2 });
   }
-  parts += textLine(tx * scale, mainBase * scale, main, { size: mainPt, fill: ink, family: fontFamily(profile, '+mj'), bold: true, boxWpx: maxW * scale });
-  if (suffix) parts += textLine(tx * scale, sufBase * scale, suffix, { size: sufPt, fill: accent2, family: fontFamily(profile, '+mj'), bold: true, boxWpx: maxW * scale });
-  if (showSub) parts += textLine(tx * scale, subBase * scale, sub, { size: subPt, fill: muted, family: fontFamily(profile), boxWpx: maxW * scale });
+  parts += textLine(titleXpx, mainBase * scale, main, { size: mainPt, fill: titleFill, family: fontFamily(profile, '+mj'), bold: true, anchor: tAlign, boxWpx: maxW * scale });
+  if (suffix) parts += textLine(titleXpx, sufBase * scale, suffix, { size: sufPt, fill: accent2, family: fontFamily(profile, '+mj'), bold: true, anchor: tAlign, boxWpx: maxW * scale });
+  if (showSub) parts += textLine(subX * scale, subBase * scale, sub, { size: subPt, fill: subFill, family: fontFamily(profile), boxWpx: maxW * scale });
   if (showTag) {
     parts += rect(profile, tx, tagBase - 0.26, 0.055, 0.34, { fill: accent2 });
     parts += textLine((tx + 0.2) * scale, tagBase * scale, tagline, { size: 15, fill: ink, family: fontFamily(profile), bold: true, boxWpx: maxW * scale });
@@ -488,11 +544,19 @@ function renderSection(profile, templateDir, section, index, total, imageData) {
 
   const tx = 0.84;
   const eyebrowY = H * 0.6;
+  // 烤底章节页（无 AI 配图时）文字直接压在模板自己的分隔底图上——全局 ink
+  // 是整册主墨色，压不住局部深浅（浅色主题的章常页是深紫满底）。取文字落点
+  // 的实际表面色做对比度选色，规则与 textAtSlot/readableOn 一致。
+  const secAsset = profile.roles.section?.asset ? path.join(templateDir, profile.roles.section.asset) : null;
+  const surfHex = imageData || !secAsset ? null : surfaceColorAt(secAsset, tx, H * 0.55, W * 0.45, H * 0.33, W, H);
+  const onSurf = (pref) => (surfHex ? '#' + readableOn(surfHex.replace('#', ''), pref, [ink.replace('#', '')]) : pref);
+  const titleFillS = onSurf(ink);
+  const leadFillS = onSurf(muted);
   // 眉题行首短杠（不与标题竖向争空间——旧版横贯线会穿过章标题字形）
   const eyebrowBar = rect(profile, tx, eyebrowY - 0.15, 0.30, 0.05, { fill: accent });
   const eyebrowEl = textLine((tx + 0.46) * scale, eyebrowY * scale, eyebrow, { size: 16, fill: accent, family: bodyFont, bold: true });
-  const titleEl = textBlock(profile, tx, eyebrowY + 0.62, W * 0.6, chapterTitle, { size: 38, maxLines: 2, fill: ink, family: fontFamily(profile, '+mj'), bold: true });
-  const leadEl = lead ? textBlock(profile, tx, eyebrowY + 1.58, W * 0.55, lead, { size: 17, maxLines: 2, fill: muted, family: bodyFont }) : '';
+  const titleEl = textBlock(profile, tx, eyebrowY + 0.62, W * 0.6, chapterTitle, { size: 38, maxLines: 2, fill: titleFillS, family: fontFamily(profile, '+mj'), bold: true });
+  const leadEl = lead ? textBlock(profile, tx, eyebrowY + 1.58, W * 0.55, lead, { size: 17, maxLines: 2, fill: leadFillS, family: bodyFont }) : '';
 
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720">`
     + rect(profile, 0, 0, W, H, { fill: bg })
@@ -510,11 +574,23 @@ function renderClosing(profile, templateDir, section, index, imageData, docTitle
   const muted = tok(profile, 'muted', '#94A3B8');
   const accent = tok(profile, 'accent', '#38BDF8');
   const image = imageData || asset(profile, templateDir, 'closing');
+  // 模板没烤出 ending 页时（素材包常见），借用章节分隔底图撑住品牌收尾氛围；
+  // 文字颜色按落点表面明暗取——紫底上全局紫墨会隐形。
+  let imagePath = null;
+  if (!imageData) {
+    const closP = profile.roles.closing?.asset ? path.join(templateDir, profile.roles.closing.asset) : null;
+    const secP = profile.roles.section?.asset ? path.join(templateDir, profile.roles.section.asset) : null;
+    imagePath = closP || secP;
+  }
+  const effectiveImage = imageData || image || (imagePath ? toDataUri(imagePath) : null);
   // 收尾主文案：优先引用块里的名句（> 行），其次第一条干净正文行，最后页标题。
   const bodyTexts = String(section.body || '').split('\n').map(cleanLine).map(unlabel).filter(Boolean);
   const title = leadOf(section) || bodyTexts[0] || section.heading || '谢谢观看';
   const sub = docTitle && docTitle !== title ? docTitle : (bodyTexts[1] || '');
-  const scrim = image ? rect(profile, 0, 0, W, H, { fill: bg, opacity: 0.45 }) : '';
+  const scrim = effectiveImage ? rect(profile, 0, 0, W, H, { fill: bg, opacity: 0.45 }) : '';
+  const surfHex = effectiveImage ? surfaceColorAt(imagePath, W * 0.2, H * 0.42, W * 0.6, H * 0.24, W, H) : null;
+  const titleFillC = surfHex ? '#' + readableOn(surfHex.replace('#', ''), null, [ink.replace('#', '')]) : ink;
+  const subFillC = surfHex ? '#' + readableOn(surfHex.replace('#', ''), muted.replace('#', '')) : muted;
   const scale = px(profile);
   const tick = rect(profile, W / 2 - 0.28, H * 0.42, 0.56, 0.09, { fill: accent });
   // 落款跟在标题实际行数之后（两行名句时自动下移，绝不叠字）
@@ -524,10 +600,10 @@ function renderClosing(profile, templateDir, section, index, imageData, docTitle
   const subBase = titleBase + ((titleLines.length - 1) * tFs * 1.25) / scale + 0.55;
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720">`
     + rect(profile, 0, 0, W, H, { fill: bg })
-    + (image ? `<image x="0" y="0" width="1280" height="720" preserveAspectRatio="xMidYMid slice" href="${image}"/>` : '')
+    + (effectiveImage ? `<image x="0" y="0" width="1280" height="720" preserveAspectRatio="xMidYMid slice" href="${effectiveImage}"/>` : '')
     + scrim + tick
-    + textBlock(profile, W / 2, titleBase, W - 2, title, { size: 40, maxLines: 2, fill: ink, family: fontFamily(profile, '+mj'), bold: true, anchor: 'middle' })
-    + (sub && subBase < H - 0.4 ? textLine((W / 2) * px(profile), subBase * px(profile), sub, { size: 15, fill: muted, family: fontFamily(profile), anchor: 'middle' }) : '')
+    + textBlock(profile, W / 2, titleBase, W - 2, title, { size: 40, maxLines: 2, fill: titleFillC, family: fontFamily(profile, '+mj'), bold: true, anchor: 'middle' })
+    + (sub && subBase < H - 0.4 ? textLine((W / 2) * px(profile), subBase * px(profile), sub, { size: 15, fill: subFillC, family: fontFamily(profile), anchor: 'middle' }) : '')
     + `</svg>`;
 }
 
