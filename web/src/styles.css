@@ -149,6 +149,7 @@ body {
 /* 舞台大图 */
 .stage-slide { width: 100%; max-width: 880px; }
 .slide-canvas {
+  position: relative;
   width: 100%; aspect-ratio: 16 / 9; background: #fff;
   border: 1px solid var(--border); border-radius: 10px; overflow: hidden;
   box-shadow: var(--shadow); cursor: pointer; transition: box-shadow .15s, border-color .15s;
@@ -156,6 +157,13 @@ body {
 .slide-canvas.active { border-color: var(--primary); box-shadow: 0 0 0 2px rgba(99,102,241,.18), var(--shadow); }
 .slide-canvas-frame { width: 100%; height: 100%; }
 .slide-canvas-frame svg { width: 100%; height: 100%; display: block; }
+.slide-edit-input {
+  position: absolute; z-index: 5; margin: 0; padding: 1px 4px;
+  border: 1.5px solid var(--primary); border-radius: 4px;
+  background: rgba(255,255,255,.97); color: inherit;
+  font-family: inherit; line-height: 1.15; resize: none; overflow: hidden;
+  box-shadow: 0 2px 10px rgba(0,0,0,.18); outline: none;
+}
 .canvas-fail { display: grid; place-items: center; height: 100%; color: var(--muted); font-size: 13px; }
 
 /* 批注面板 */
@@ -467,22 +475,49 @@ body {
 
 /* ============ 阶段2：选择模板 ============ */
 .stage-theme { align-items: stretch; }
-.theme-pick-head { text-align: center; margin-bottom: 8px; }
+.stage-theme.drag { outline: 2px dashed var(--primary); outline-offset: -10px; border-radius: 12px; }
+.theme-pick-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 12px; flex-wrap: wrap; }
 .theme-pick-title { font-size: 20px; font-weight: 700; }
-.theme-pick-sub { font-size: 13px; color: var(--muted); margin-top: 6px; }
+.theme-pick-sub { font-size: 13px; color: var(--muted); margin-top: 6px; max-width: 620px; }
+.theme-pick-actions { flex: none; display: flex; align-items: center; gap: 14px; }
+.ai-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); cursor: pointer; user-select: none; white-space: nowrap; }
+.ai-toggle input { accent-color: var(--primary); cursor: pointer; }
 .theme-pick-grid {
   display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   gap: 18px; width: 100%; max-width: 900px; margin: 8px auto 0;
 }
 .theme-pick-card {
+  position: relative;
   border: 1.5px solid var(--border); border-radius: 14px; padding: 12px;
-  background: #fff; cursor: pointer; display: flex; flex-direction: column; gap: 10px;
+  background: #fff; display: flex; flex-direction: column;
   transition: border-color .15s, transform .1s, box-shadow .15s;
 }
 .theme-pick-card:hover { border-color: var(--primary); transform: translateY(-2px); box-shadow: var(--shadow); }
 .theme-pick-card.active { border-color: var(--primary); box-shadow: 0 0 0 2px rgba(99,102,241,.18); }
+.theme-pick-hit {
+  display: flex; flex-direction: column; gap: 10px; width: 100%;
+  background: none; border: 0; padding: 0; cursor: pointer; font: inherit; color: inherit;
+}
 .theme-pick-swatch { height: 108px; border-radius: 9px; }
 .theme-pick-name { font-size: 14px; font-weight: 600; text-align: center; }
+.theme-pick-del {
+  position: absolute; top: 6px; right: 6px; width: 24px; height: 24px; line-height: 22px;
+  border: 0; border-radius: 50%; background: rgba(15,23,42,.55); color: #fff;
+  font-size: 13px; cursor: pointer; opacity: 0; transition: opacity .12s; z-index: 2;
+}
+.theme-pick-card:hover .theme-pick-del { opacity: 1; }
+.theme-pick-del:hover { background: var(--danger, #C0392B); }
+.tpl-empty {
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;
+  width: 100%; max-width: 640px; margin: 24px auto; padding: 48px 28px;
+  border: 2px dashed var(--border); border-radius: 16px; background: #fff;
+  cursor: pointer; text-align: center; transition: border-color .15s, background .15s;
+}
+.tpl-empty:hover { border-color: var(--primary); background: #fafbff; }
+.tpl-empty-icon { font-size: 34px; }
+.tpl-empty-title { font-size: 17px; font-weight: 700; }
+.tpl-empty-sub { font-size: 13px; color: var(--muted); max-width: 460px; }
+.theme-gallery-empty { font-size: 12px; color: var(--muted); line-height: 1.6; padding: 4px 0; }
 
 /* 模板预览弹层 */
 .modal-overlay { position: fixed; inset: 0; z-index: 80; background: rgba(15,18,26,.5); display: grid; place-items: center; padding: 24px; animation: pv-fadeup .12s ease; }

@@ -66,10 +66,13 @@ function legacyFreeSvg(section, role) {
 (async () => {
   const profile = await profileFromPptx(fs.readFileSync(ref), { stagingDir: outDir });
   const { title, sections } = splitOutline(markdown);
-  const theme = loadTheme('warm-retro');
-  const spec = buildSpec(theme, loadThemeLayouts(theme.id));
-
+  // 工程不再内置模板；仅 --live-baseline 需要一个主题/spec，从 --theme <已上传模板id> 取。
+  const themeId = process.argv.includes('--theme') ? process.argv[process.argv.indexOf('--theme') + 1] : null;
   const liveBaseline = process.argv.includes('--live-baseline');
+  let spec = null;
+  if (themeId) spec = buildSpec(loadTheme(themeId), loadThemeLayouts(themeId));
+  if (liveBaseline && !spec) throw new Error('--live-baseline 需要 --theme <已上传模板 id>');
+
   const baseline = [];
   for (let i = 0; i < sections.length; i++) {
     const s = sections[i];

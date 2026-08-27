@@ -5,20 +5,24 @@ import React from 'react';
 export default function ThemeGallery({ themes, selectedId, onPreview }) {
   return (
     <div className="theme-gallery">
-      <div className="theme-gallery-label">选择模板风格</div>
-      <div className="theme-list">
-        {themes.map((t) => (
-          <button
-            key={t.id}
-            className={`theme-card${t.id === selectedId ? ' active' : ''}`}
-            onClick={() => onPreview(t)}
-            title={`预览「${t.name || t.id}」`}
-          >
-            <span className="theme-swatch" style={swatchStyle(t)} />
-            <span className="theme-name">{t.name || t.id}</span>
-          </button>
-        ))}
-      </div>
+      <div className="theme-gallery-label">模板</div>
+      {(!themes || themes.length === 0) ? (
+        <div className="theme-gallery-empty">还没有模板，去「选择模板」步上传一份 .pptx</div>
+      ) : (
+        <div className="theme-list">
+          {themes.map((t) => (
+            <button
+              key={t.id}
+              className={`theme-card${t.id === selectedId ? ' active' : ''}`}
+              onClick={() => onPreview(t)}
+              title={`预览「${t.name || t.id}」`}
+            >
+              <span className="theme-swatch" style={swatchStyle(t)} />
+              <span className="theme-name">{t.name || t.id}</span>
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

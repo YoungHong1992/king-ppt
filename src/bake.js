@@ -8,6 +8,7 @@ const fs = require('fs');
 const path = require('path');
 const { parseSourcePages } = require('./pptx-pages');
 const htmlShot = require('./html-shot');
+const { isDecorativeText } = require('./render-guard');
 
 const SHAPE_CSS = {
   ellipse: 'border-radius:50%;',
@@ -120,7 +121,10 @@ function textToSlot(o) {
   const r1 = (v) => Math.round(v * 100) / 100;
   return {
     rect: o.bbox.map(r1),
-    size: Math.round(top.size || 28),
+    // Clamp absurd sizes: a decorative giant number (e.g. a 315pt "04") can be
+    // the largest run on a page and must not be stored as a title size. Big
+    // section numbers (~110) are still preserved; the renderer clamps per role.
+    size: Math.min(Math.round(top.size || 28), 160),
     color: top.color || '000000',
     bold: Boolean(top.bold),
     align,
@@ -131,18 +135,25 @@ function textToSlot(o) {
   };
 }
 
-// 找页面的主/副标题文本对象（按字号排序的文本对象；返回对象下标）
-function findTitleObjs(page) {
-  const textIdx = (page.objects || [])
+// 找页面的主/副标题文本对象（按字号排序的文本对象；返回对象下标）。
+// excludeDecorative：内容页顶栏用——剔除装饰性巨字/大号水印数字，避免把「315pt 的
+// 04」当成标题（章节页仍保留巨号，用于识别章节序号）。
+function findTitleObjs(page, { excludeDecorative = false } = {}) {
+  let textIdx = (page.objects || [])
     .map((o, i) => ({ o, i }))
     .filter(({ o }) => o.type === 'shape' && (o.texts || []).length > 0
       && String((o.texts[0].runs || []).map((r) => r.text).join('')).trim().length >= 2)
     .map(({ o, i }) => {
       const runs = o.texts.flatMap((p) => p.runs).filter((r) => r.size);
       const size = runs.length ? Math.max(...runs.map((r) => r.size)) : 0;
-      return { i, o, size };
+      const text = o.texts.flatMap((p) => (p.runs || []).map((r) => r.text)).join('');
+      return { i, o, size, text };
     })
     .sort((a, b) => b.size - a.size);
+  if (excludeDecorative) {
+    const kept = textIdx.filter((t) => !isDecorativeText(t.text, t.size));
+    if (kept.length) textIdx = kept;
+  }
   const title = textIdx[0] || null;
   const subtitle = textIdx.slice(1).find((t) => title && t.o.bbox[1] > title.o.bbox[1]) || textIdx[1] || null;
   return { title, subtitle };
@@ -175,7 +186,8 @@ function isLicenseLike(page) {
 // —— 示例文字（答辩人/日期/英文行）都是逐 deck 内容，不该留在底图里；
 // clipTopIn（顶栏条）：抠掉与区域相交的所有文字，只留线条/logo/装饰。
 async function bakePage({ page, canvas, mediaDir, file, clipTopIn = null }) {
-  const { title, subtitle } = findTitleObjs(page);
+  // 顶栏(内容页)排除装饰性巨字，避免把大号水印数字当标题
+  const { title, subtitle } = findTitleObjs(page, { excludeDecorative: clipTopIn !== null });
   const skip = new Set();
   const slots = {};
   (page.objects || []).forEach((o, i) => {

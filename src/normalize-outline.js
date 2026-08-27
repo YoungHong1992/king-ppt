@@ -11,6 +11,20 @@ const MAX_COMMENTS = 200;   // 单批批注上限
 const MAX_FIELD = 2000;     // quote / comment 单字段长度上限
 const MAX_TITLE = 200;      // 标题长度上限
 
+// Strip reasoning-model chain-of-thought so it never leaks into the outline
+// (which is shown to the user and split into slides by `## `). Reasoning models
+// (e.g. *-M3) wrap a <think>…</think> monologue — often containing DRAFT `##`
+// headings — before the real answer. Keep only what follows the final
+// </think>; if the block is unclosed (truncated mid-thought), drop from <think>
+// to the end rather than emit the monologue as content.
+function stripReasoning(md) {
+  let s = String(md || '');
+  const lastClose = s.toLowerCase().lastIndexOf('</think>');
+  if (lastClose >= 0) s = s.slice(lastClose + '</think>'.length);
+  else s = s.replace(/<think>[\s\S]*$/i, '');
+  return s.replace(/<\/?think>/gi, '').trim();
+}
+
 // 把 Markdown 当不可信文本清洗：删危险子树 → 事件钩子 → javascript: → 原生 HTML 外链
 function sanitizeMarkdown(md) {
   let s = String(md || '');
@@ -57,7 +71,7 @@ function normalizeOutline(raw) {
   try {
     const picked = pickMarkdown(raw);
     if (picked == null) return { type: 'outline', markdown: '', title: '' };
-    const markdown = sanitizeMarkdown(picked).replace(/\r\n?/g, '\n');
+    const markdown = sanitizeMarkdown(stripReasoning(picked)).replace(/\r\n?/g, '\n');
     const obj = raw && typeof raw === 'object' ? raw : {};
     const title = (typeof obj.title === 'string' && obj.title.trim())
       ? obj.title.trim().slice(0, MAX_TITLE)

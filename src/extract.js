@@ -6,7 +6,8 @@ const path = require('path');
 const crypto = require('crypto');
 const JSZip = require('jszip');
 const { XMLParser } = require('fast-xml-parser');
-const { loadDescriptor, USER_DIR } = require('./descriptor');
+const { USER_DIR } = require('./descriptor');
+const { BASE_DESCRIPTOR } = require('./base-descriptor');
 const { resolve } = require('./layout-resolver');
 const { profileFromPptx } = require('./template-profile');
 
@@ -343,8 +344,8 @@ async function extractFromPptx(buffer, filename = 'uploaded.pptx') {
     savedImages.push('assets/' + base);
   }
 
-  // ---- 组装描述符草稿（以 classic-blue 为底，按画布比例缩放，再覆盖提取结果）----
-  const base = JSON.parse(JSON.stringify(loadDescriptor('classic-blue')));
+  // ---- 组装描述符草稿（以内置结构底板为底，按画布比例缩放，再覆盖提取结果）----
+  const base = JSON.parse(JSON.stringify(BASE_DESCRIPTOR));
   delete base._dir; delete base._id;
   const ratio = canvas.width / base.canvas.width;
   const scaleRect = (r) => r.map((v, i) => r1(v * (i % 2 === 0 ? ratio : ratio))); // 16:9 同比例缩放

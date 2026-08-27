@@ -19,6 +19,10 @@ async function req(path, { method = 'GET', body, raw = false } = {}) {
 export const api = {
   listThemes: () => req('/api/templates'),
   themeSpec: (id) => req(`/api/templates/${encodeURIComponent(id)}/spec`),
+  // 上传模板：先提取+烘焙为暂存（base64），再落库为可复用模板；删除用于本地维护
+  extractTemplate: (name, data) => req('/api/templates/extract', { method: 'POST', body: { name, data } }),
+  saveTemplate: (stagingId, name) => req('/api/templates', { method: 'POST', body: { stagingId, name } }),
+  deleteTheme: (id) => req(`/api/templates/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   // 演示态快照（刷新/重连恢复）：deck=整册幻灯片，doc=内容大纲
   deck: () => req('/api/deck'),
   styleScore: () => req('/api/deck/style-score'),
@@ -44,11 +48,12 @@ export const api = {
   reviseOutline: (comments) =>
     req('/api/generate/outline', { method: 'POST', body: { comments } }),
   // 阶段2：按主题 + 定稿大纲，服务端逐页流式生成整册（结果经 SSE 'deck'/'slide' 实时回来）
-  generateDeck: (themeId) =>
-    req('/api/generate/deck', { method: 'POST', body: { themeId } }),
+  // images=true 时封面/章节用 AI 生成插画；默认 false = 复刻模板原图（忠于模板）
+  generateDeck: (themeId, images = false) =>
+    req('/api/generate/deck', { method: 'POST', body: { themeId, images } }),
   // 单页重生成（可带修改意见 feedback）
-  regenSlide: (index, feedback) =>
-    req('/api/generate/slide', { method: 'POST', body: { index, feedback } }),
+  regenSlide: (index, feedback, images = false) =>
+    req('/api/generate/slide', { method: 'POST', body: { index, feedback, images } }),
   // 导出当前 deck 为 .pptx（返回 Blob）
   async export(slides, title, themeId) {
     const resp = await req('/api/export', { method: 'POST', raw: true, body: { slides, title, themeId } });

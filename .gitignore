@@ -19,3 +19,7 @@ exports/
 # 参考项目（各自独立 git 仓库，仅供本地对照，不纳入本仓库）
 dashi-ppt-skill/
 ppt-master/
+
+# 本地临时评审/探针产物
+.tmp-*.json
+.tmp-v3probe/

@@ -2,7 +2,7 @@ const path = require('path');
 const fs = require('fs');
 const express = require('express');
 const { buildPptx } = require('./pptx');
-const { loadDescriptor, listDescriptors, loadTheme, loadThemeLayouts, loadProfile } = require('./descriptor');
+const { loadDescriptor, listDescriptors, loadTheme, loadThemeLayouts, loadProfile, deleteTemplate } = require('./descriptor');
 const { resolve } = require('./layout-resolver'); // 仅供旧模板画廊 sample/preview 路由；P3 主题系统落地后连同这些路由一并移除
 const assets = require('./assets');
 const { extractFromPptx, saveTemplate } = require('./extract');
@@ -29,6 +29,7 @@ app.use((req, res, next) => {
   const large = req.path === '/api/templates/extract'
     || req.path === '/api/assets'
     || req.path === '/api/materials'
+    || req.path === '/api/export' // 整册 SVG（含 base64 生成插画）回传导出，同样可达数 MB
     || req.path.startsWith('/api/deck/')
     || req.path.startsWith('/api/generate/');
   return (large ? jsonBodyLarge : jsonBody)(req, res, next);
@@ -40,6 +41,7 @@ function statusOf(err) {
   if (err.code === 'BAD_SESSION_ID' || err.code === 'BAD_ASSET_NAME') return 400;
   if (err.code === 'NO_API_KEY') return 401;
   if (err.code === 'BAD_INPUT' || err.code === 'NO_MODEL_CONFIG' || err.code === 'CAPABILITY_NOT_SUPPORTED') return 400;
+  if (err.code === 'TEMPLATE_NOT_FOUND') return 400; // 未指定/找不到模板：提示先上传并选择模板
   if (err.code === 'BUSY') return 409;
   if (err.code === 'LLM_HTTP' || err.code === 'LLM_EMPTY' || err.code === 'LLM_TIMEOUT') return 502; // 上游模型错误
   return 500;
@@ -65,7 +67,25 @@ app.get('/api/templates', (req, res) => {
 app.get('/api/templates/:id/spec', wrap(async (req, res) => {
   const theme = loadTheme(req.params.id);
   const profile = loadProfile(req.params.id);
-  res.json({ ...buildSpec(theme, loadThemeLayouts(req.params.id)), profile: profile ? { confidence: profile.extraction?.confidence, roles: Object.keys(profile.roles || {}), sourceSlideCount: profile.sourceSlideCount } : null });
+  const base = buildSpec(theme, loadThemeLayouts(req.params.id));
+  let layouts = base.layouts;
+  if (profile) {
+    // Preview == generation: render the 4 role prototypes with the SAME
+    // deterministic renderer that builds the deck (baked chrome + tokens),
+    // instead of the generic synthesized prototypes — so the preview reflects
+    // the actual template rather than an approximation.
+    const samples = [
+      { role: 'cover', section: { heading: theme.name || '演示文稿标题', body: '副标题示例，一句话点明主旨\n署名 · 日期' } },
+      { role: 'section', section: { heading: '第一章 示例章节', body: '> 本章导语示例', sectionNo: '01' } },
+      { role: 'content', section: { heading: '示例页面标题', body: '- 要点一：一句话说明要义\n- 要点二：一句话说明要义\n- 要点三：一句话说明要义\n> 一句话收束的结论' } },
+      { role: 'closing', section: { heading: '谢谢观看', body: '> 谢谢观看' } },
+    ];
+    const rendered = samples
+      .map((s, i) => ({ role: s.role, svg: renderTemplateSlide({ profile, templateDir: theme._dir, section: s.section, role: s.role, index: i, total: samples.length, imageData: null }) }))
+      .filter((x) => x.svg);
+    if (rendered.length) layouts = rendered;
+  }
+  res.json({ ...base, layouts, profile: profile ? { confidence: profile.extraction?.confidence, roles: Object.keys(profile.roles || {}), sourceSlideCount: profile.sourceSlideCount } : null });
 }));
 
 // 画廊卡片预览：3 张样例页的场景图
@@ -155,6 +175,14 @@ app.post('/api/templates', wrap(async (req, res) => {
     return res.status(400).json({ error: '参数不完整' });
   }
   res.json({ id: saveTemplate(stagingId, name), templates: listDescriptors() });
+}));
+
+// 删除一份本地上传的模板（本地维护）→ 返回最新列表
+app.delete('/api/templates/:id', wrap(async (req, res) => {
+  const { id } = req.params;
+  if (!/^[a-zA-Z0-9_-]+$/.test(id)) return res.status(400).json({ error: '非法的模板 id' });
+  deleteTemplate(id);
+  res.json({ ok: true, templates: listDescriptors() });
 }));
 
 // ---------- 配图 ----------
@@ -335,11 +363,21 @@ app.post('/api/generate/deck', wrap(async (req, res) => {
   try {
     // 先落空册（含 title/templateId/canvas），浏览器据此切到出片步等待逐页冒出
     relay.setDeck({ title, templateId: theme.id, canvas: theme.canvas, slides: [] });
+    // Fidelity-first: by default封面/章节复刻模板烘焙设计（imageData=null→baked）。
+    // 仅当请求显式开启 images 时，才让文本模型写 art-direction + 每页专属视觉 brief，
+    // 再生成 AI 插画（封面/章节/结尾各配本页立意的画面，共享同一风格锚点）。
+    const wantImages = !!(req.body && req.body.images);
+    let artDirection = null;
+    let briefs = null;
+    if (profile && wantImages) {
+      artDirection = await genDeck.deckArtDirection({ docTitle: title, sections, profile, cacheKey: `${theme.id}::${md}` });
+      briefs = await genDeck.deckImageBriefs({ docTitle: title, sections, cacheKey: `${theme.id}::${md}::briefs` });
+    }
     const recovered = [];
     for (let i = 0; i < total; i++) {
       const s = sections[i];
-      const profilePolicy = spec.imagePolicy || { enabled: true, roles: ['cover', 'section'], size: '1024x1024', prompt: profile?.imageStyle };
-      const imageData = profile ? await genDeck.generateSlideImage({ role: s.role, index: i, docTitle: title, section: s, policy: profilePolicy }) : null;
+      const profilePolicy = spec.imagePolicy || { enabled: wantImages, roles: ['cover', 'section', 'closing'], size: '1024x1024', prompt: artDirection || profile?.imageStyle };
+      const imageData = profile ? await genDeck.generateSlideImage({ role: s.role, index: i, docTitle: title, section: s, policy: profilePolicy, brief: briefs ? briefs[i] : null }) : null;
       let svg = profile ? renderTemplateSlide({ profile, templateDir: theme._dir, section: s, role: s.role, index: i, total, imageData, docTitle: title }) : null;
       if (!svg) {
         svg = await genDeck.generateSlideSvg({ docTitle: title, section: s, role: s.role, index: i, total, spec });
@@ -376,8 +414,16 @@ app.post('/api/generate/slide', wrap(async (req, res) => {
 
   genDeck.acquire();
   try {
-    const profilePolicy = spec.imagePolicy || { enabled: true, roles: ['cover', 'section'], size: '1024x1024', prompt: profile?.imageStyle };
-    const imageData = profile ? await genDeck.generateSlideImage({ role: section.role, index: idx, docTitle: title, section, policy: profilePolicy }) : null;
+    // Match the deck's imagery choice on single-slide redraw (fidelity by default).
+    const wantImages = !!(req.body && req.body.images);
+    let artDirection = null;
+    let briefs = null;
+    if (profile && wantImages) {
+      artDirection = await genDeck.deckArtDirection({ docTitle: title, sections, profile, cacheKey: `${theme.id}::${md}` });
+      briefs = await genDeck.deckImageBriefs({ docTitle: title, sections, cacheKey: `${theme.id}::${md}::briefs` });
+    }
+    const profilePolicy = spec.imagePolicy || { enabled: wantImages, roles: ['cover', 'section', 'closing'], size: '1024x1024', prompt: artDirection || profile?.imageStyle };
+    const imageData = profile ? await genDeck.generateSlideImage({ role: section.role, index: idx, docTitle: title, section, policy: profilePolicy, brief: briefs ? briefs[idx] : null }) : null;
     let svg = profile ? renderTemplateSlide({ profile, templateDir: theme._dir, section, role: section.role, index: idx, total, imageData, docTitle: title }) : null;
     if (!svg) {
       svg = await genDeck.generateSlideSvg({ docTitle: title, section, role: section.role, index: idx, total, spec, feedback });
