@@ -333,7 +333,15 @@ const openaiAdapter = {
     const body = { model: ctx.model, messages, temperature };
     if (json) body.response_format = { type: 'json_object' };
     if (maxTokens) body.max_tokens = maxTokens;
-    const data = await postJSON(`${ctx.baseURL}/chat/completions`, { key: ctx.apiKey, body, timeoutMs });
+    let data;
+    try {
+      data = await postJSON(`${ctx.baseURL}/chat/completions`, { key: ctx.apiKey, body, timeoutMs });
+    } catch (e) {
+      // 部分网关（如 Kimi k3）只接受固定 temperature：去掉该参数重试一次
+      if (!/invalid temperature/i.test(String(e && e.message))) throw e;
+      delete body.temperature;
+      data = await postJSON(`${ctx.baseURL}/chat/completions`, { key: ctx.apiKey, body, timeoutMs });
+    }
     const content = data.choices?.[0]?.message?.content;
     if (!content) throw fail('模型返回内容为空', 'LLM_EMPTY');
     return content;

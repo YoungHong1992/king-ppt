@@ -247,9 +247,9 @@ const rect = (profile, xIn, yIn, wIn, hIn, { fill, opacity, rx = 0, stroke, sw =
     + `${stroke ? ` stroke="${stroke}" stroke-width="${sw}"` : ''}/>`;
 };
 // A small deterministic line icon (rounded square + dot) to add card density.
-function geoIcon(profile, xIn, yIn, sIn, color) {
+function geoIcon(profile, xIn, yIn, sIn, color, rxIn = 0.05) {
   const s = px(profile);
-  return rect(profile, xIn, yIn, sIn, sIn, { stroke: color, sw: 1.6, rx: 0.05 })
+  return rect(profile, xIn, yIn, sIn, sIn, { stroke: color, sw: 1.6, rx: rxIn })
     + `<circle cx="${((xIn + sIn / 2) * s).toFixed(1)}" cy="${((yIn + sIn / 2) * s).toFixed(1)}" r="${(sIn * 0.16 * s).toFixed(1)}" fill="${color}"/>`;
 }
 // Shared page footer: a thin rule, a left walk label, and NN / TT page numbers.
@@ -347,7 +347,7 @@ function renderContent(profile, templateDir, section, index, total, imageData, s
     const verseH = vRows * vLineH + vPad * 2;
     const verseY = footY - 0.3 - verseH;
     bandBottom = verseY - 0.3;
-    versePanel = rect(profile, bx, verseY, bw, verseH, { fill: panel, rx: 0.06 })
+    versePanel = rect(profile, bx, verseY, bw, verseH, { fill: panel, rx: cardRx })
       + rect(profile, bx, verseY, 0.1, verseH, { fill: accent2 });
     const colW = (bw - 1.1) / vCols;
     quoteLines.forEach((ln, i) => {
@@ -364,7 +364,7 @@ function renderContent(profile, templateDir, section, index, total, imageData, s
     // Single point with no takeaway → a centered key-message statement.
     const cardH = Math.min(bandH, 2.4);
     const top = cardTop + Math.max(0, (bandH - cardH) / 2);
-    parts += rect(profile, bx, top, bw, cardH, { fill: panel, rx: 0.06 });
+    parts += rect(profile, bx, top, bw, cardH, { fill: panel, rx: cardRx });
     parts += rect(profile, bx, top, bw, 0.09, { fill: accent });
     parts += textLine((bx + 0.55) * scale, (top + 0.95) * scale, '01', { size: 32, fill: accent, family: bodyFont, bold: true });
     const sp = splitPoint(cards[0]);
@@ -396,10 +396,10 @@ function renderContent(profile, templateDir, section, index, total, imageData, s
     for (let i = 0; i < n; i++) {
       const x = bx + i * (cardW + gap);
       const ac = cardAccents[i % cardAccents.length];
-      parts += rect(profile, x, rowTop, cardW, cardH, { fill: panel, rx: 0.06 });
+      parts += rect(profile, x, rowTop, cardW, cardH, { fill: panel, rx: cardRx });
       parts += rect(profile, x, rowTop, cardW, 0.09, { fill: ac }); // unified top accent bar
       parts += textLine((x + 0.32) * scale, (rowTop + 0.85) * scale, String(i + 1).padStart(2, '0'), { size: 27, fill: ac, family: bodyFont, bold: true });
-      parts += geoIcon(profile, x + cardW - 0.62, rowTop + 0.34, 0.32, ac);
+      parts += geoIcon(profile, x + cardW - 0.62, rowTop + 0.34, 0.32, ac, iconRx);
       const sp = splits[i];
       if (sp.desc) {
         const maxDesc = Math.max(1, Math.min(4, Math.floor((cardH - 1.95 - 0.22) / descLineH)));
@@ -423,7 +423,7 @@ function renderContent(profile, templateDir, section, index, total, imageData, s
 
   // Bottom conclusion bar: amber left edge + bold takeaway (source signature).
   if (conclusion) {
-    parts += rect(profile, bx, calloutY, bw, calloutH, { fill: panel, rx: 0.06 });
+    parts += rect(profile, bx, calloutY, bw, calloutH, { fill: panel, rx: cardRx });
     parts += rect(profile, bx, calloutY, 0.1, calloutH, { fill: accent2 });
     const sp = splitPoint(conclusion);
     parts += textBlock(profile, bx + 0.4, calloutY + 0.42, bw - 0.8, sp.desc ? `${sp.lead}　${sp.desc}` : conclusion, { size: 18, maxLines: 2, fill: ink, family: bodyFont, bold: true });
